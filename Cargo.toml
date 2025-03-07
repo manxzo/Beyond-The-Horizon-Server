@@ -1,0 +1,28 @@
+[package]
+name = "serv"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actix="0.13.5"
+actix-web="*"
+dotenvy = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+sqlx = { version = "*", features = ["runtime-tokio-native-tls", "postgres", "macros","chrono","uuid"] }
+tokio = { version = "*", features = ["full"] }
+jsonwebtoken = "*"
+chrono = { version = "*", features = ["serde"] }
+argon2 = "*"
+rand = "*"  
+futures-util = "*"
+futures-channel = "*"
+uuid = { version = "*", features = ["v4", "serde"] }
+actix-web-actors="*"
+geoutils="*"
+strum="*"
+strum_macros="*"
+lazy_static="*"
+log = "0.4"
+env_logger = "*"
+futures = "0.3"

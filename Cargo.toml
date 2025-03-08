@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 actix="0.13.5"
 actix-web="*"
+actix-multipart = "*"
 dotenvy = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
@@ -26,3 +27,9 @@ lazy_static="*"
 log = "0.4"
 env_logger = "*"
 futures = "0.3"
+reqwest = { version = "*", features = ["json", "multipart"] }
+base64 = "*"
+sha1 = "*"
+mime = "*"
+mime_guess = "*"
+sanitize-filename = "*"

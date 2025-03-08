@@ -1,10 +1,17 @@
 use crate::handlers::auth::Claims;
+use crate::handlers::b2_storage::B2Client;
 use crate::models::all_models::UserRole;
+use actix_multipart::Multipart;
 use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
 use chrono::{NaiveDate, NaiveDateTime};
+use futures::{StreamExt, TryStreamExt};
+use log::{error, info};
+use mime_guess::from_path;
+use sanitize_filename::sanitize;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
+use std::io::Write;
 use uuid::Uuid;
 
 //User Info
@@ -214,6 +221,233 @@ pub async fn delete_user_account(pool: web::Data<PgPool>, req: HttpRequest) -> i
     }
 }
 
+// Avatar upload response
+#[derive(Serialize, Deserialize)]
+pub struct AvatarUploadResponse {
+    pub avatar_url: String,
+}
+
+// Upload avatar handler
+pub async fn upload_avatar(
+    pool: web::Data<PgPool>,
+    req: HttpRequest,
+    mut payload: Multipart,
+) -> impl Responder {
+    // Extract user claims from request
+    let ext = req.extensions();
+    let claims = match ext.get::<Claims>() {
+        Some(claims) => claims,
+        None => return HttpResponse::Unauthorized().body("Unauthorized"),
+    };
+
+    // First, check if the user already has a custom avatar in B2
+    let current_avatar_result = sqlx::query("SELECT avatar_url FROM users WHERE user_id = $1")
+        .bind(claims.id)
+        .fetch_one(pool.get_ref())
+        .await;
+
+    let current_avatar = match current_avatar_result {
+        Ok(record) => record.get::<String, _>("avatar_url"),
+        Err(e) => {
+            error!("Error fetching current avatar URL: {:?}", e);
+            return HttpResponse::InternalServerError().body("Failed to fetch current avatar");
+        }
+    };
+
+    // Initialize B2 client
+    let mut b2_client = match B2Client::new() {
+        Ok(client) => client,
+        Err(e) => {
+            error!("Failed to initialize B2 client: {:?}", e);
+            return HttpResponse::InternalServerError().body("Failed to initialize storage client");
+        }
+    };
+
+    // If the current avatar is from B2 (not the default UI Avatars), delete it
+    if current_avatar.contains("/file/") && !current_avatar.contains("ui-avatars.com") {
+        // Extract filename from URL
+        let filename = current_avatar.split('/').last().unwrap_or_default();
+
+        // Delete file from B2
+        if let Err(e) = b2_client.delete_file(filename).await {
+            error!("Failed to delete old avatar from B2: {:?}", e);
+            // Continue anyway to upload the new avatar
+        } else {
+            info!("Successfully deleted old avatar from B2");
+        }
+    }
+
+    // Process the multipart form data
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut file_name: Option<String> = None;
+    let mut content_type: Option<String> = None;
+
+    while let Ok(Some(mut field)) = payload.try_next().await {
+        let content_disposition = match field.content_disposition() {
+            Some(cd) => cd,
+            None => continue,
+        };
+
+        if let Some(name) = content_disposition.get_name() {
+            if name == "avatar" {
+                // Get filename
+                let original_filename = content_disposition
+                    .get_filename()
+                    .map(|f| sanitize(f))
+                    .unwrap_or_else(|| format!("avatar_{}.jpg", Uuid::new_v4()));
+
+                // Create a unique filename with user ID
+                let extension = original_filename.split('.').last().unwrap_or("jpg");
+
+                let unique_filename = format!("avatar_{}.{}", claims.id, extension);
+                file_name = Some(unique_filename);
+
+                // Guess content type from filename
+                content_type = Some(
+                    from_path(&original_filename)
+                        .first_or_octet_stream()
+                        .to_string(),
+                );
+
+                // Read file data
+                let mut data = Vec::new();
+                while let Some(chunk_result) = field.next().await {
+                    match chunk_result {
+                        Ok(chunk) => {
+                            if let Err(e) = data.write_all(&chunk) {
+                                error!("Error writing chunk to buffer: {:?}", e);
+                                return HttpResponse::InternalServerError()
+                                    .body("Error processing file upload");
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error reading multipart chunk: {:?}", e);
+                            return HttpResponse::InternalServerError()
+                                .body("Error processing file upload");
+                        }
+                    }
+                }
+
+                // Check file size (limit to 5MB)
+                if data.len() > 5 * 1024 * 1024 {
+                    return HttpResponse::BadRequest().body("File too large (max 5MB)");
+                }
+
+                file_bytes = Some(data);
+            }
+        }
+    }
+
+    // Check if we have a file
+    let (file_data, filename, mime_type) = match (file_bytes, file_name, content_type) {
+        (Some(data), Some(name), Some(mime)) => (data, name, mime),
+        _ => return HttpResponse::BadRequest().body("No avatar file provided"),
+    };
+
+    // Upload to B2
+    let avatar_url = match b2_client
+        .upload_file(&file_data, &filename, &mime_type)
+        .await
+    {
+        Ok(url) => url,
+        Err(e) => {
+            error!("Failed to upload avatar to B2: {:?}", e);
+            return HttpResponse::InternalServerError().body("Failed to upload avatar");
+        }
+    };
+
+    // Update user's avatar URL in database
+    let result =
+        sqlx::query("UPDATE users SET avatar_url = $1 WHERE user_id = $2 RETURNING avatar_url")
+            .bind(&avatar_url)
+            .bind(claims.id)
+            .fetch_one(pool.get_ref())
+            .await;
+
+    match result {
+        Ok(record) => {
+            let avatar_url: String = record.get("avatar_url");
+            HttpResponse::Ok().json(AvatarUploadResponse { avatar_url })
+        }
+        Err(e) => {
+            error!("Error updating avatar URL in database: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to update avatar URL in database")
+        }
+    }
+}
+
+// Reset avatar handler
+pub async fn reset_avatar(pool: web::Data<PgPool>, req: HttpRequest) -> impl Responder {
+    // Extract user claims from request
+    let ext = req.extensions();
+    let claims = match ext.get::<Claims>() {
+        Some(claims) => claims,
+        None => return HttpResponse::Unauthorized().body("Unauthorized"),
+    };
+
+    // Get current avatar URL
+    let current_avatar_result = sqlx::query("SELECT avatar_url FROM users WHERE user_id = $1")
+        .bind(claims.id)
+        .fetch_one(pool.get_ref())
+        .await;
+
+    let current_avatar = match current_avatar_result {
+        Ok(record) => record.get::<String, _>("avatar_url"),
+        Err(e) => {
+            error!("Error fetching current avatar URL: {:?}", e);
+            return HttpResponse::InternalServerError().body("Failed to fetch current avatar");
+        }
+    };
+
+    // Check if the current avatar is from B2 (not the default UI Avatars)
+    if current_avatar.contains("/file/") && !current_avatar.contains("ui-avatars.com") {
+        // Initialize B2 client
+        let mut b2_client = match B2Client::new() {
+            Ok(client) => client,
+            Err(e) => {
+                error!("Failed to initialize B2 client: {:?}", e);
+                return HttpResponse::InternalServerError()
+                    .body("Failed to initialize storage client");
+            }
+        };
+
+        // Extract filename from URL
+        let filename = current_avatar.split('/').last().unwrap_or_default();
+
+        // Delete file from B2
+        if let Err(e) = b2_client.delete_file(filename).await {
+            error!("Failed to delete avatar from B2: {:?}", e);
+            // Continue anyway to update the database
+        }
+    }
+
+    // Generate default avatar URL with UI Avatars
+    let username = claims.username.clone();
+    let default_avatar_url = format!(
+        "https://ui-avatars.com/api/?name={}&background=random&size=256",
+        username
+    );
+
+    // Update user's avatar URL in database
+    let result =
+        sqlx::query("UPDATE users SET avatar_url = $1 WHERE user_id = $2 RETURNING avatar_url")
+            .bind(&default_avatar_url)
+            .bind(claims.id)
+            .fetch_one(pool.get_ref())
+            .await;
+
+    match result {
+        Ok(record) => {
+            let avatar_url: String = record.get("avatar_url");
+            HttpResponse::Ok().json(AvatarUploadResponse { avatar_url })
+        }
+        Err(e) => {
+            error!("Error resetting avatar URL in database: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to reset avatar URL in database")
+        }
+    }
+}
+
 // Config User Data Routes
 // GET /users/info
 // GET /users/{username}
@@ -225,6 +459,8 @@ pub fn config_user_data_routes(cfg: &mut web::ServiceConfig) {
             .route("/info", web::get().to(get_logged_in_user_info))
             .route("/{username}", web::get().to(get_user_by_name))
             .route("/update-info", web::patch().to(update_user_profile))
-            .route("/delete-user", web::delete().to(delete_user_account)),
+            .route("/delete-user", web::delete().to(delete_user_account))
+            .route("/avatar/upload", web::post().to(upload_avatar))
+            .route("/avatar/reset", web::post().to(reset_avatar)),
     );
 }

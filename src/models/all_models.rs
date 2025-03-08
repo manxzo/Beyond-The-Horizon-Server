@@ -5,7 +5,7 @@ use sqlx::{Decode, FromRow};
 use strum_macros::{Display, EnumString};
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize, sqlx::Type, Display, EnumString, PartialEq,Clone)]
+#[derive(Debug, Serialize, Deserialize, sqlx::Type, Display, EnumString, PartialEq,Clone,Copy)]
 //  USER & AUTHENTICATION STRUCTS
 #[sqlx(type_name = "user_role", rename_all = "lowercase")]
 pub enum UserRole {

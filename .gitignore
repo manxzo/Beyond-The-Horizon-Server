@@ -65,3 +65,6 @@ bth-server-postman.json
 # Ignore Linux system files
 *.swp
 *.swo
+
+# Ignore Cursor IDE settings
+.cursor

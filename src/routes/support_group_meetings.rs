@@ -44,16 +44,18 @@ pub async fn create_support_group_meeting(
         };
 
         if group_chat_id.is_none() {
-            return HttpResponse::BadRequest().body("Support group not found or not approved");
+            return HttpResponse::NotFound().body("Support group not found or not approved");
         }
-        let group_chat_id = group_chat_id.unwrap();
 
         let query = "
-            INSERT INTO group_meetings (group_chat_id, host_id, title, description, scheduled_time, support_group_id, status)
-            VALUES ($1, $2, $3, $4, $5, $6, 'upcoming')
-            RETURNING meeting_id, group_chat_id, host_id, title, description, scheduled_time
+            INSERT INTO group_meetings (meeting_id, group_chat_id, host_id, title, description, scheduled_time, support_group_id, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 'upcoming')
+            RETURNING meeting_id, group_chat_id, support_group_id, host_id, title, description, scheduled_time, status
         ";
+        
+        let meeting_id = Uuid::new_v4();
         let meeting = sqlx::query_as::<_, GroupMeeting>(query)
+            .bind(meeting_id)
             .bind(group_chat_id)
             .bind(claims.id)
             .bind(&payload.title)
@@ -62,6 +64,7 @@ pub async fn create_support_group_meeting(
             .bind(payload.support_group_id)
             .fetch_one(pool.get_ref())
             .await;
+            
         match meeting {
             Ok(m) => {
                 // Use a transaction to ensure data consistency
@@ -73,6 +76,23 @@ pub async fn create_support_group_meeting(
                             .body("Failed to process meeting creation");
                     }
                 };
+
+                // Add the host as a participant automatically
+                let insert_host = "
+                    INSERT INTO meeting_participants (meeting_id, user_id)
+                    VALUES ($1, $2)
+                ";
+                if let Err(e) = sqlx::query(insert_host)
+                    .bind(meeting_id)
+                    .bind(claims.id)
+                    .execute(&mut *tx)
+                    .await
+                {
+                    eprintln!("Error adding host as participant: {:?}", e);
+                    let _ = tx.rollback().await;
+                    return HttpResponse::InternalServerError()
+                        .body("Failed to add host as participant");
+                }
 
                 let member_query =
                     "SELECT user_id FROM support_group_members WHERE support_group_id = $1";

@@ -182,7 +182,7 @@ pub struct SupportGroup {
     pub description: String,
     pub admin_id: Option<Uuid>,
     pub group_chat_id: Option<Uuid>,
-    pub status: String,
+    pub status: SupportGroupStatus,
     pub created_at: NaiveDateTime,
 }
 

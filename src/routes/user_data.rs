@@ -89,8 +89,11 @@ struct UserPrivacyCheck {
 //Get User By Name
 //Get User By Name Input: Path (/users/{username})
 //Get User By Name Output: PublicUserInfo or PrivateUserInfo
-async fn get_user_by_name(pool: web::Data<PgPool>, path: web::Path<String>) -> impl Responder {
+pub async fn get_user_by_name(pool: web::Data<PgPool>, path: web::Path<String>) -> impl Responder {
     let username = path.into_inner();
+
+    // Debug log to check the username being queried
+    eprintln!("Looking up user with username: {}", username);
 
     let privacy_result =
         sqlx::query_as::<_, UserPrivacyCheck>("SELECT privacy FROM users WHERE username = $1")
@@ -100,9 +103,10 @@ async fn get_user_by_name(pool: web::Data<PgPool>, path: web::Path<String>) -> i
 
     match privacy_result {
         Ok(privacy_data) => {
+            eprintln!("Found user, privacy setting: {}", privacy_data.privacy);
             if privacy_data.privacy {
                 let private_user_result = sqlx::query_as::<_, PrivateUserInfo>(
-                    "SELECT username, role, avatar_url FROM users WHERE username = $1",
+                    "SELECT username, role::text as role, avatar_url FROM users WHERE username = $1",
                 )
                 .bind(&username)
                 .fetch_one(pool.get_ref())
@@ -110,12 +114,15 @@ async fn get_user_by_name(pool: web::Data<PgPool>, path: web::Path<String>) -> i
 
                 return match private_user_result {
                     Ok(private_user) => HttpResponse::Ok().json(private_user),
-                    Err(_) => HttpResponse::NotFound().body("User not found"),
+                    Err(e) => {
+                        eprintln!("Error fetching private user data: {:?}", e);
+                        HttpResponse::InternalServerError().body("Failed to retrieve user data")
+                    },
                 };
             }
 
             let user_result = sqlx::query_as::<_, PublicUserInfo>(
-                "SELECT username, role, avatar_url, user_profile, bio, interests, experience, languages
+                "SELECT username, role::text as role, avatar_url, user_profile, bio, interests, experience, languages
                 FROM users WHERE username = $1"
             )
             .bind(&username)
@@ -124,10 +131,16 @@ async fn get_user_by_name(pool: web::Data<PgPool>, path: web::Path<String>) -> i
 
             match user_result {
                 Ok(user) => HttpResponse::Ok().json(user),
-                Err(_) => HttpResponse::NotFound().body("User not found"),
+                Err(e) => {
+                    eprintln!("Error fetching public user data: {:?}", e);
+                    HttpResponse::InternalServerError().body("Failed to retrieve user data")
+                },
             }
         }
-        Err(_) => HttpResponse::NotFound().body("User not found"),
+        Err(e) => {
+            eprintln!("Error checking user privacy: {:?}", e);
+            HttpResponse::NotFound().body("User not found")
+        },
     }
 }
 

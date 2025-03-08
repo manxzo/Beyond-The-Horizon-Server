@@ -387,7 +387,7 @@ pub async fn list_my_support_groups(
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     if let Some(claims) = req.extensions().get::<Claims>() {
-        let user_id = &claims.id;
+        let user_id = &claims.id; 
 
         let query = r#"
             SELECT sg.support_group_id, sg.title, sg.description, sgm.joined_at

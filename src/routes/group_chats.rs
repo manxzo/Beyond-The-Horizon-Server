@@ -7,27 +7,30 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// -----------------------
-/// Request Structures
-/// -----------------------
+// -----------------------
+// Request Structures
+// -----------------------
 
+//Send Group Chat Message Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendGroupChatMessageRequest {
     pub content: String,
 }
 
+//Add Group Chat Member Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AddGroupChatMemberRequest {
     pub member_id: Uuid,
 }
 
+//Group Chat Invitation Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GroupChatInvitationRequest {
     pub target_user_id: Uuid,
     pub message: String,
 }
 
-/// Helper function: Check if a user is a member of a group chat.
+// Helper function: Check if a user is a member of a group chat.
 async fn is_member(pool: &PgPool, group_chat_id: Uuid, user_id: Uuid) -> Result<bool, sqlx::Error> {
     let query = "SELECT COUNT(*) FROM group_chat_members WHERE group_chat_id = $1 AND user_id = $2";
     let count: i64 = sqlx::query_scalar(query)
@@ -38,13 +41,13 @@ async fn is_member(pool: &PgPool, group_chat_id: Uuid, user_id: Uuid) -> Result<
     Ok(count > 0)
 }
 
-/// -----------------------
-/// Handler Implementations
-/// -----------------------
+// -----------------------
+// Handler Implementations
+// -----------------------
 
-/// 1. Create a new group chat  
-/// Inserts a new record into `group_chats` with current timestamp,
-/// and assigns the authenticated user as the creator.
+//Create Group Chat
+//Create Group Chat Input: HttpRequest(JWT Token)
+//Create Group Chat Output: GroupChat
 pub async fn create_group_chat(pool: web::Data<PgPool>, req: HttpRequest) -> impl Responder {
     // Clone the Claims from the request for full ownership.
     let claims: Claims = match req.extensions().get::<Claims>() {
@@ -74,8 +77,9 @@ pub async fn create_group_chat(pool: web::Data<PgPool>, req: HttpRequest) -> imp
     }
 }
 
-/// 2. Get details of a group chat including its members and messages  
-/// Only members can retrieve details.
+//Get Group Chat Details
+//Get Group Chat Details Input: HttpRequest(JWT Token), Path (/group-chats/{group_chat_id})
+//Get Group Chat Details Output: ChatDetails
 pub async fn get_group_chat_details(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -155,7 +159,8 @@ pub async fn get_group_chat_details(
         }
     };
 
-    #[derive(Serialize)]
+    //Chat Details
+    #[derive(Debug, Serialize)]
     struct ChatDetails {
         chat: GroupChat,
         members: Vec<GroupChatMember>,
@@ -170,8 +175,9 @@ pub async fn get_group_chat_details(
     HttpResponse::Ok().json(details)
 }
 
-/// 3. List all group chats for the authenticated user  
-/// Queries group chats in which the user is a member.
+//List User Group Chats
+//List User Group Chats Input: HttpRequest(JWT Token)
+//List User Group Chats Output: Vec<GroupChat>
 pub async fn list_user_group_chats(pool: web::Data<PgPool>, req: HttpRequest) -> impl Responder {
     let claims: Claims = match req.extensions().get::<Claims>() {
         Some(c) => c.clone(),
@@ -200,9 +206,9 @@ pub async fn list_user_group_chats(pool: web::Data<PgPool>, req: HttpRequest) ->
     }
 }
 
-/// 4. Send a group chat message  
-/// Inserts a new message into `group_chat_messages` with the current timestamp.
-/// Only allows members to send messages.
+//Send Group Chat Message
+//Send Group Chat Message Input: HttpRequest(JWT Token), Path (/group-chats/{group_chat_id}/messages), SendGroupChatMessageRequest
+//Send Group Chat Message Output: GroupChatMessage
 pub async fn send_group_chat_message(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -270,8 +276,9 @@ pub async fn send_group_chat_message(
     }
 }
 
-/// 5. Edit a group chat message  
-/// Updates the content of a message if the authenticated user is the sender.
+//Edit Group Chat Message
+//Edit Group Chat Message Input: HttpRequest(JWT Token), Path (/group-chats/{group_chat_id}/messages/{message_id}), SendGroupChatMessageRequest
+//Edit Group Chat Message Output: GroupChatMessage
 pub async fn edit_group_chat_message(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -325,8 +332,9 @@ pub async fn edit_group_chat_message(
     }
 }
 
-/// 6. Delete a group chat message (mark as deleted)  
-/// Updates the message's deleted flag to true.
+//Delete Group Chat Message
+//Delete Group Chat Message Input: HttpRequest(JWT Token), Path (/group-chats/{group_chat_id}/messages/{message_id})
+//Delete Group Chat Message Output: Success message
 pub async fn delete_group_chat_message(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -378,8 +386,9 @@ pub async fn delete_group_chat_message(
     }
 }
 
-/// 7. Add a member to a group chat  
-/// Inserts a new record into `group_chat_members`. Prevents duplicate entries.
+//Add Group Chat Member
+//Add Group Chat Member Input: HttpRequest(JWT Token), Path (/group-chats/{group_chat_id}/members), AddGroupChatMemberRequest
+//Add Group Chat Member Output: GroupChatMember
 pub async fn add_group_chat_member(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -476,8 +485,9 @@ pub async fn add_group_chat_member(
     }
 }
 
-/// 8. Remove a member from a group chat  
-/// Deletes the member record from `group_chat_members`.
+//Remove Group Chat Member
+//Remove Group Chat Member Input: HttpRequest(JWT Token), Path (/group-chats/{group_chat_id}/members/{member_id})
+//Remove Group Chat Member Output: Success message
 pub async fn remove_group_chat_member(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -557,10 +567,19 @@ pub async fn remove_group_chat_member(
     }
 }
 
-/// -----------------------
-/// Route Configuration
-/// -----------------------
+// -----------------------
+// Route Configuration
+// -----------------------
 
+//Config Group Chat Routes
+// POST /group-chats/new
+// GET /group-chats/{group_chat_id}
+// GET /group-chats
+// POST /group-chats/{group_chat_id}/messages
+// PATCH /group-chats/{group_chat_id}/messages/{message_id}
+// DELETE /group-chats/{group_chat_id}/messages/{message_id}
+// POST /group-chats/{group_chat_id}/members
+// DELETE /group-chats/{group_chat_id}/members/{member_id}
 pub fn config_group_chat_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/group-chats")
@@ -590,11 +609,3 @@ pub fn config_group_chat_routes(cfg: &mut web::ServiceConfig) {
     );
 }
 
-// POST /group-chats/create
-// GET /group-chats/list
-// GET /group-chats/{group_chat_id}
-// POST /group-chats/{group_chat_id}/messages
-// PATCH /group-chats/{group_chat_id}/messages/{message_id}
-// DELETE /group-chats/{group_chat_id}/messages/{message_id}
-// POST /group-chats/{group_chat_id}/members
-// DELETE /group-chats/{group_chat_id}/members/{member_id}

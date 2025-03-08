@@ -1,13 +1,15 @@
 use crate::handlers::auth::Claims;
-use crate::handlers::ws; 
-use crate::models::all_models::{GroupChat, SupportGroup, SupportGroupMember,GroupMeeting,UserRole};
+use crate::handlers::ws;
+use crate::models::all_models::{
+    GroupChat, GroupMeeting, SupportGroup, SupportGroupMember, UserRole,
+};
 use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::prelude::FromRow;
 use sqlx::PgPool;
+use sqlx::prelude::FromRow;
 use uuid::Uuid;
-use chrono::NaiveDateTime;
 
 //Suggest Support Group Request
 #[derive(Debug, Deserialize, Serialize)]
@@ -16,9 +18,9 @@ pub struct SuggestSupportGroupRequest {
     pub description: String,
 }
 
-// Suggest Support Group Handler
-// Suggest Support Group Input: SuggestSupportGroupRequest
-// Suggest Support Group Output: SupportGroup
+//Suggest Support Group
+//Suggest Support Group Input: HttpRequest(JWT Token), SuggestSupportGroupRequest
+//Suggest Support Group Output: SupportGroup
 pub async fn suggest_support_group(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -55,7 +57,7 @@ pub async fn suggest_support_group(
     }
 }
 
-// Support Group Summary
+//Support Group Summary
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct SupportGroupSummary {
     pub support_group_id: Uuid,
@@ -65,13 +67,10 @@ pub struct SupportGroupSummary {
     pub member_count: i64,
 }
 
-// List Support Groups Handler
-// List Support Groups Input: JWT Token
-// List Support Groups Output: Vec<SupportGroupSummary>
-pub async fn list_support_groups(
-    pool: web::Data<PgPool>,
-    req: HttpRequest,
-) -> impl Responder {
+//List Support Groups
+//List Support Groups Input: HttpRequest(JWT Token)
+//List Support Groups Output: Vec<SupportGroupSummary>
+pub async fn list_support_groups(pool: web::Data<PgPool>, req: HttpRequest) -> impl Responder {
     // Ensure the request is authenticated.
     if req.extensions().get::<Claims>().is_none() {
         return HttpResponse::Unauthorized().body("Authentication required");
@@ -104,15 +103,16 @@ pub async fn list_support_groups(
         }
     }
 }
-// Join Support Group Request
+
+//Join Support Group Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct JoinSupportGroupRequest {
     pub support_group_id: Uuid,
 }
 
-// Join Support Group Handler
-// Join Support Group Input: JoinSupportGroupRequest
-// Join Support Group Output: SupportGroupMember
+//Join Support Group
+//Join Support Group Input: HttpRequest(JWT Token), JoinSupportGroupRequest
+//Join Support Group Output: SupportGroupMember
 pub async fn join_support_group(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -143,7 +143,7 @@ pub async fn join_support_group(
                     .bind(&user_id)
                     .fetch_all(pool.get_ref())
                     .await;
-                
+
                 if let Ok(members) = members {
                     // Notify only the members of this specific support group
                     let ws_payload = json!({
@@ -151,10 +151,10 @@ pub async fn join_support_group(
                         "support_group_id": payload.support_group_id,
                         "user_id": user_id
                     });
-                    
+
                     ws::send_to_users(&members, ws_payload).await;
                 }
-                
+
                 HttpResponse::Ok().json(m)
             }
             Err(e) => {
@@ -167,10 +167,9 @@ pub async fn join_support_group(
     }
 }
 
-
-// Leave Support Group Handler
-// Leave Support Group Input: SupportGroupId
-// Leave Support Group Output: String
+//Leave Support Group
+//Leave Support Group Input: HttpRequest(JWT Token), Path (/support-groups/{group_id}/leave)
+//Leave Support Group Output: Success message
 pub async fn leave_support_group(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -193,11 +192,13 @@ pub async fn leave_support_group(
             .await;
 
         // Delete the membership record from support_group_members.
-        let result = sqlx::query("DELETE FROM support_group_members WHERE support_group_id = $1 AND user_id = $2")
-            .bind(support_group_id)
-            .bind(user_id)
-            .execute(pool.get_ref())
-            .await;
+        let result = sqlx::query(
+            "DELETE FROM support_group_members WHERE support_group_id = $1 AND user_id = $2",
+        )
+        .bind(support_group_id)
+        .bind(user_id)
+        .execute(pool.get_ref())
+        .await;
 
         match result {
             Ok(_) => {
@@ -208,7 +209,7 @@ pub async fn leave_support_group(
                         "support_group_id": support_group_id,
                         "user_id": user_id,
                     });
-                    
+
                     ws::send_to_users(&members, ws_payload).await;
                 }
 
@@ -224,8 +225,8 @@ pub async fn leave_support_group(
     }
 }
 
-// Sponsor Info
-#[derive(Debug, Serialize,Deserialize,FromRow)]
+//Sponsor Info
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct SponsorInfo {
     pub user_id: Uuid,
     pub username: String,
@@ -233,8 +234,8 @@ pub struct SponsorInfo {
     pub role: String,
 }
 
-// Support Group Details
-#[derive(Debug, Serialize,Deserialize)]
+//Support Group Details
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SupportGroupDetails {
     pub group: SupportGroup,
     pub members: Vec<SupportGroupMember>,
@@ -244,9 +245,9 @@ pub struct SupportGroupDetails {
     pub meeting_group_chats: Vec<GroupChat>,
 }
 
-// Get Support Group Details Handler
-// Get Support Group Details Input: SupportGroupId
-// Get Support Group Details Output: SupportGroupDetails
+//Get Support Group Details
+//Get Support Group Details Input: HttpRequest(JWT Token), Path (/support-groups/{group_id})
+//Get Support Group Details Output: SupportGroupDetails
 pub async fn get_support_group_details(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -264,20 +265,23 @@ pub async fn get_support_group_details(
     let group: SupportGroup = match sqlx::query_as::<_, SupportGroup>(group_query)
         .bind(support_group_id)
         .fetch_one(pool.get_ref())
-        .await {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("Error fetching support group: {:?}", e);
-                return HttpResponse::NotFound().body("Support group not found");
-            }
-        };
+        .await
+    {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("Error fetching support group: {:?}", e);
+            return HttpResponse::NotFound().body("Support group not found");
+        }
+    };
 
     // Retrieve all members of the support group.
     let members_query = "SELECT * FROM support_group_members WHERE support_group_id = $1";
-    let members: Vec<SupportGroupMember> = match sqlx::query_as::<_, SupportGroupMember>(members_query)
-        .bind(support_group_id)
-        .fetch_all(pool.get_ref())
-        .await {
+    let members: Vec<SupportGroupMember> =
+        match sqlx::query_as::<_, SupportGroupMember>(members_query)
+            .bind(support_group_id)
+            .fetch_all(pool.get_ref())
+            .await
+        {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("Error fetching group members: {:?}", e);
@@ -295,13 +299,14 @@ pub async fn get_support_group_details(
     let sponsors: Vec<SponsorInfo> = match sqlx::query_as::<_, SponsorInfo>(sponsors_query)
         .bind(support_group_id)
         .fetch_all(pool.get_ref())
-        .await {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Error fetching sponsors: {:?}", e);
-                Vec::new()
-            }
-        };
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error fetching sponsors: {:?}", e);
+            Vec::new()
+        }
+    };
 
     // Retrieve the main group chat for the support group.
     let main_group_chat = if let Some(gc_id) = group.group_chat_id {
@@ -309,45 +314,49 @@ pub async fn get_support_group_details(
         match sqlx::query_as::<_, GroupChat>(chat_query)
             .bind(gc_id)
             .fetch_one(pool.get_ref())
-            .await {
-                Ok(chat) => Some(chat),
-                Err(e) => {
-                    eprintln!("Error fetching main group chat: {:?}", e);
-                    None
-                }
+            .await
+        {
+            Ok(chat) => Some(chat),
+            Err(e) => {
+                eprintln!("Error fetching main group chat: {:?}", e);
+                None
             }
+        }
     } else {
         None
     };
 
     // Retrieve all meetings associated with the support group.
-    let meetings_query = "SELECT * FROM group_meetings WHERE support_group_id = $1 ORDER BY scheduled_time ASC";
+    let meetings_query =
+        "SELECT * FROM group_meetings WHERE support_group_id = $1 ORDER BY scheduled_time ASC";
     let meetings: Vec<GroupMeeting> = match sqlx::query_as::<_, GroupMeeting>(meetings_query)
         .bind(support_group_id)
         .fetch_all(pool.get_ref())
-        .await {
-            Ok(ms) => ms,
-            Err(e) => {
-                eprintln!("Error fetching meetings: {:?}", e);
-                Vec::new()
-            }
-        };
+        .await
+    {
+        Ok(ms) => ms,
+        Err(e) => {
+            eprintln!("Error fetching meetings: {:?}", e);
+            Vec::new()
+        }
+    };
 
     // Retrieve all distinct group chats associated with these meetings.
     let meeting_group_chats: Vec<GroupChat> = match sqlx::query_as::<_, GroupChat>(
         "SELECT DISTINCT gc.* FROM group_meetings gm \
          JOIN group_chats gc ON gm.group_chat_id = gc.group_chat_id \
-         WHERE gm.support_group_id = $1"
+         WHERE gm.support_group_id = $1",
     )
-        .bind(support_group_id)
-        .fetch_all(pool.get_ref())
-        .await {
-            Ok(chats) => chats,
-            Err(e) => {
-                eprintln!("Error fetching meeting group chats: {:?}", e);
-                Vec::new()
-            }
-        };
+    .bind(support_group_id)
+    .fetch_all(pool.get_ref())
+    .await
+    {
+        Ok(chats) => chats,
+        Err(e) => {
+            eprintln!("Error fetching meeting group chats: {:?}", e);
+            Vec::new()
+        }
+    };
 
     let details = SupportGroupDetails {
         group,
@@ -361,8 +370,8 @@ pub async fn get_support_group_details(
     HttpResponse::Ok().json(details)
 }
 
-// User Support Groups
-#[derive(Debug, Serialize,Deserialize,FromRow)]
+//User Support Groups
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct UserSupportGroups {
     pub support_group_id: Uuid,
     pub title: String,
@@ -370,9 +379,9 @@ pub struct UserSupportGroups {
     pub joined_at: chrono::NaiveDateTime,
 }
 
-// List My Support Groups Handler
-// List My Support Groups Input: JWT Token
-// List My Support Groups Output: Vec<UserSupportGroups>
+//List My Support Groups
+//List My Support Groups Input: HttpRequest(JWT Token)
+//List My Support Groups Output: Vec<UserSupportGroups>
 pub async fn list_my_support_groups(
     pool: web::Data<PgPool>,
     req: actix_web::HttpRequest,
@@ -391,24 +400,25 @@ pub async fn list_my_support_groups(
         match sqlx::query_as::<_, UserSupportGroups>(query)
             .bind(user_id)
             .fetch_all(pool.get_ref())
-            .await {
-                Ok(groups) => HttpResponse::Ok().json(groups),
-                Err(e) => {
-                    eprintln!("Error listing my support groups: {:?}", e);
-                    HttpResponse::InternalServerError().body("Failed to list support groups")
-                }
+            .await
+        {
+            Ok(groups) => HttpResponse::Ok().json(groups),
+            Err(e) => {
+                eprintln!("Error listing my support groups: {:?}", e);
+                HttpResponse::InternalServerError().body("Failed to list support groups")
             }
+        }
     } else {
         HttpResponse::Unauthorized().body("Authentication required")
     }
 }
 
-// Config Support Group Routes
+//Config Support Group Routes
 // POST /support-groups/suggest
 // GET /support-groups/list
 // GET /support-groups/{group_id}
 // POST /support-groups/join
-// DELETE /support-groups/leave
+// DELETE /support-groups/{group_id}/leave
 // GET /support-groups/my
 pub fn config_support_group_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
@@ -418,7 +428,6 @@ pub fn config_support_group_routes(cfg: &mut web::ServiceConfig) {
             .route("/{group_id}", web::get().to(get_support_group_details))
             .route("/join", web::post().to(join_support_group))
             .route("/{group_id}/leave", web::delete().to(leave_support_group))
-            .route("/my", web::get().to(list_my_support_groups))
+            .route("/my", web::get().to(list_my_support_groups)),
     );
 }
-

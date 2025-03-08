@@ -74,7 +74,7 @@ struct PrivateUserInfo {
 }
 
 //User Privacy Check
-#[derive(sqlx::FromRow,Serialize,Deserialize)]
+#[derive(sqlx::FromRow, Serialize, Deserialize)]
 struct UserPrivacyCheck {
     privacy: bool,
 }
@@ -85,18 +85,17 @@ struct UserPrivacyCheck {
 async fn get_user_by_name(pool: web::Data<PgPool>, path: web::Path<String>) -> impl Responder {
     let username = path.into_inner();
 
-    let privacy_result = sqlx::query_as::<_, UserPrivacyCheck>(
-        "SELECT privacy FROM users WHERE username = $1"
-    )
-    .bind(&username)
-    .fetch_one(pool.get_ref())
-    .await;
+    let privacy_result =
+        sqlx::query_as::<_, UserPrivacyCheck>("SELECT privacy FROM users WHERE username = $1")
+            .bind(&username)
+            .fetch_one(pool.get_ref())
+            .await;
 
     match privacy_result {
         Ok(privacy_data) => {
             if privacy_data.privacy {
                 let private_user_result = sqlx::query_as::<_, PrivateUserInfo>(
-                    "SELECT username, role, avatar_url FROM users WHERE username = $1"
+                    "SELECT username, role, avatar_url FROM users WHERE username = $1",
                 )
                 .bind(&username)
                 .fetch_one(pool.get_ref())
@@ -229,4 +228,3 @@ pub fn config_user_data_routes(cfg: &mut web::ServiceConfig) {
             .route("/delete-user", web::delete().to(delete_user_account)),
     );
 }
-

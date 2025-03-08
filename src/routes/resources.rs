@@ -7,7 +7,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// Request payload for creating a new resource.
+//Create Resource Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateResourceRequest {
     pub title: String,
@@ -15,7 +15,7 @@ pub struct CreateResourceRequest {
     pub support_group_id: Option<Uuid>,
 }
 
-/// Request payload for updating an existing resource.
+//Update Resource Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UpdateResourceRequest {
     pub title: Option<String>,
@@ -23,8 +23,9 @@ pub struct UpdateResourceRequest {
     pub support_group_id: Option<Uuid>,
 }
 
-/// Create a new resource.
-/// The authenticated user's id is used as contributor_id and approved is set to false by default.
+//Create Resource
+//Create Resource Input: HttpRequest(JWT Token), CreateResourceRequest
+//Create Resource Output: Resource
 pub async fn create_resource(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -132,7 +133,9 @@ pub async fn create_resource(
     }
 }
 
-/// Retrieve a single resource by its ID.
+//Get Resource
+//Get Resource Input: Path (/resources/{resource_id})
+//Get Resource Output: Resource
 pub async fn get_resource(pool: web::Data<PgPool>, path: web::Path<Uuid>) -> impl Responder {
     let resource_id = path.into_inner();
     let query = "
@@ -153,7 +156,9 @@ pub async fn get_resource(pool: web::Data<PgPool>, path: web::Path<Uuid>) -> imp
     }
 }
 
-/// List all resources.
+//List Resources
+//List Resources Input: None
+//List Resources Output: Vec<Resource>
 pub async fn list_resources(pool: web::Data<PgPool>) -> impl Responder {
     let query = "
         SELECT resource_id, contributor_id, title, content, approved, created_at, support_group_id
@@ -172,8 +177,9 @@ pub async fn list_resources(pool: web::Data<PgPool>) -> impl Responder {
     }
 }
 
-/// Update an existing resource.
-/// Only the original contributor is allowed to update the resource.
+//Update Resource
+//Update Resource Input: HttpRequest(JWT Token), Path (/resources/{resource_id}), UpdateResourceRequest
+//Update Resource Output: Resource
 pub async fn update_resource(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -231,8 +237,9 @@ pub async fn update_resource(
     }
 }
 
-/// Delete a resource.
-/// Only the contributor (owner) can delete their resource.
+//Delete Resource
+//Delete Resource Input: HttpRequest(JWT Token), Path (/resources/{resource_id})
+//Delete Resource Output: Success message
 pub async fn delete_resource(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -267,7 +274,12 @@ pub async fn delete_resource(
     }
 }
 
-/// Configure the resource routes.
+//Config Resource Routes
+// GET /resources
+// GET /resources/{resource_id}
+// POST /resources/new
+// PATCH /resources/{resource_id}
+// DELETE /resources/{resource_id}
 pub fn config_resource_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/resources")
@@ -279,8 +291,3 @@ pub fn config_resource_routes(cfg: &mut web::ServiceConfig) {
     );
 }
 
-// GET /resources/list
-// POST /resources/create
-// GET /resources/{id}
-// PATCH /resources/{id}
-// DELETE /resources/{id}

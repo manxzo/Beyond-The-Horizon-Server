@@ -7,15 +7,16 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+//Send Message Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendMessageRequest {
     pub receiver_username: String,
     pub content: String,
 }
 
-// Send Message Handler
-// Send Message Input: SendMessageRequest
-// Send Message Output: Message
+//Send Message
+//Send Message Input: HttpRequest(JWT Token), SendMessageRequest
+//Send Message Output: Message
 pub async fn send_message(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -70,14 +71,15 @@ pub async fn send_message(
     }
 }
 
-#[derive(Serialize, Deserialize)]
+//Conversation List
+#[derive(Debug, Serialize)]
 pub struct ConversationList {
     pub usernames: Vec<String>,
 }
 
-// Get Conversation List Handler
-// Get Conversation List Input: None
-// Get Conversation List Output: ConversationList
+//Get Conversation List
+//Get Conversation List Input: HttpRequest(JWT Token)
+//Get Conversation List Output: ConversationList
 pub async fn get_conversation_list(pool: web::Data<PgPool>, req: HttpRequest) -> impl Responder {
     if let Some(claims) = req.extensions().get::<Claims>() {
         let user_id = claims.id;
@@ -110,9 +112,9 @@ pub async fn get_conversation_list(pool: web::Data<PgPool>, req: HttpRequest) ->
     }
 }
 
-// Get Conversation Handler
-// Get Conversation Input: username (path parameter)
-// Get Conversation Output: Vec<Message>
+//Get Conversation
+//Get Conversation Input: HttpRequest(JWT Token), Path (/messages/{username})
+//Get Conversation Output: Vec<Message>
 pub async fn get_conversation(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -159,9 +161,9 @@ pub async fn get_conversation(
     }
 }
 
-// Mark Message Seen Handler
-// Mark Message Seen Input: message_id (path parameter)
-// Mark Message Seen Output: Message
+//Mark Message Seen
+//Mark Message Seen Input: HttpRequest(JWT Token), Path (/messages/seen/{message_id})
+//Mark Message Seen Output: Message
 pub async fn mark_message_seen(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -201,14 +203,15 @@ pub async fn mark_message_seen(
     }
 }
 
+//Edit Message Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct EditMessageRequest {
     pub content: String,
 }
 
-// Edit Message Handler
-// Edit Message Input: EditMessageRequest, message_id (path parameter)
-// Edit Message Output: Message
+//Edit Message
+//Edit Message Input: HttpRequest(JWT Token), Path (/messages/{message_id}), EditMessageRequest
+//Edit Message Output: Message
 pub async fn edit_message(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -250,9 +253,9 @@ pub async fn edit_message(
     }
 }
 
-// Delete Message Handler
-// Delete Message Input: message_id (path parameter)
-// Delete Message Output: Message
+//Delete Message
+//Delete Message Input: HttpRequest(JWT Token), Path (/messages/{message_id})
+//Delete Message Output: Success message
 pub async fn delete_message(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -292,14 +295,15 @@ pub async fn delete_message(
     }
 }
 
+//Report Message Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ReportMessageRequest {
     pub reason: String,
 }
 
-// Report Message Handler
-// Report Message Input: ReportMessageRequest, message_id (path parameter)
-// Report Message Output: Report
+//Report Message
+//Report Message Input: HttpRequest(JWT Token), Path (/messages/report/{message_id}), ReportMessageRequest
+//Report Message Output: Report
 pub async fn report_message(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -359,14 +363,14 @@ pub async fn report_message(
     }
 }
 
-// Config Message Routes
+//Config Message Routes
 // POST /messages/send
 // GET /messages/conversations
-// GET /messages/conversation/{username}
-// PUT /messages/{message_id}/seen
-// PUT /messages/{message_id}/edit
-// POST /messages/{message_id}/report
+// GET /messages/{username}
+// PATCH /messages/seen/{message_id}
+// PATCH /messages/{message_id}
 // DELETE /messages/{message_id}
+// POST /messages/report/{message_id}
 pub fn config_message_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/messages")

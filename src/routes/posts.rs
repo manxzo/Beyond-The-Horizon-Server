@@ -83,7 +83,7 @@ pub async fn create_post(
 // Get Post Output: Post with likes and comments
 pub async fn get_post(pool: web::Data<PgPool>, path: web::Path<Uuid>) -> impl Responder {
     let post_id = path.into_inner();
-    
+
     // Get the post
     let post_query = "
         SELECT post_id, author_id, content, created_at, tags
@@ -93,7 +93,7 @@ pub async fn get_post(pool: web::Data<PgPool>, path: web::Path<Uuid>) -> impl Re
         .bind(post_id)
         .fetch_one(pool.get_ref())
         .await;
-    
+
     match post_result {
         Ok(post) => {
             // Get likes for this post
@@ -106,7 +106,7 @@ pub async fn get_post(pool: web::Data<PgPool>, path: web::Path<Uuid>) -> impl Re
                 .bind(post_id)
                 .fetch_all(pool.get_ref())
                 .await;
-            
+
             // Get comments for this post
             let comments_query = "
                 SELECT comment_id, post_id, author_id, content, created_at, parent_comment_id
@@ -118,7 +118,7 @@ pub async fn get_post(pool: web::Data<PgPool>, path: web::Path<Uuid>) -> impl Re
                 .bind(post_id)
                 .fetch_all(pool.get_ref())
                 .await;
-            
+
             // Get like count
             let like_count_query = "
                 SELECT COUNT(*) FROM post_likes WHERE post_id = $1
@@ -127,7 +127,7 @@ pub async fn get_post(pool: web::Data<PgPool>, path: web::Path<Uuid>) -> impl Re
                 .bind(post_id)
                 .fetch_one(pool.get_ref())
                 .await;
-            
+
             match (likes_result, comments_result, like_count_result) {
                 (Ok(likes), Ok(comments), Ok(like_count)) => {
                     let post_with_details = PostWithDetails {
@@ -137,13 +137,13 @@ pub async fn get_post(pool: web::Data<PgPool>, path: web::Path<Uuid>) -> impl Re
                         like_count,
                     };
                     HttpResponse::Ok().json(post_with_details)
-                },
+                }
                 _ => {
                     eprintln!("Error fetching post details");
                     HttpResponse::InternalServerError().body("Failed to fetch post details")
                 }
             }
-        },
+        }
         Err(e) => {
             eprintln!("Error fetching post: {:?}", e);
             HttpResponse::NotFound().body("Post not found")
@@ -183,7 +183,7 @@ pub async fn list_posts(
     let sort_by = params.sort_by.as_deref().unwrap_or("latest");
     let order_clause = match sort_by {
         "most-liked" => "ORDER BY like_count DESC, p.created_at DESC",
-        _ => "ORDER BY p.created_at DESC" // Default to latest
+        _ => "ORDER BY p.created_at DESC", // Default to latest
     };
 
     // Prepare response with metadata
@@ -199,7 +199,8 @@ pub async fn list_posts(
     let (base_query, count_query) = if tags.is_empty() {
         // No tag filtering
         (
-            format!("
+            format!(
+                "
                 WITH post_likes_count AS (
                     SELECT post_id, COUNT(*) as like_count
                     FROM post_likes
@@ -212,13 +213,16 @@ pub async fn list_posts(
                 LEFT JOIN post_likes_count plc ON p.post_id = plc.post_id
                 {}
                 LIMIT $1 OFFSET $2
-            ", order_clause),
-            "SELECT COUNT(*) FROM posts".to_string()
+            ",
+                order_clause
+            ),
+            "SELECT COUNT(*) FROM posts".to_string(),
         )
     } else {
         // Filter by tags
         (
-            format!("
+            format!(
+                "
                 WITH post_likes_count AS (
                     SELECT post_id, COUNT(*) as like_count
                     FROM post_likes
@@ -232,8 +236,11 @@ pub async fn list_posts(
                 WHERE COALESCE(p.tags, ARRAY[]::text[]) && $1::text[]
                 {}
                 LIMIT $2 OFFSET $3
-            ", order_clause),
-            "SELECT COUNT(*) FROM posts WHERE COALESCE(tags, ARRAY[]::text[]) && $1::text[]".to_string()
+            ",
+                order_clause
+            ),
+            "SELECT COUNT(*) FROM posts WHERE COALESCE(tags, ARRAY[]::text[]) && $1::text[]"
+                .to_string(),
         )
     };
 
@@ -276,7 +283,7 @@ pub async fn list_posts(
     match posts_result {
         Ok(rows) => {
             let mut posts_with_details = Vec::new();
-            
+
             for row in rows {
                 let post_id: Uuid = row.try_get("post_id").unwrap_or_default();
                 let post = Post {
@@ -287,7 +294,7 @@ pub async fn list_posts(
                     tags: row.try_get("tags").unwrap_or_default(),
                 };
                 let like_count: i64 = row.try_get("like_count").unwrap_or_default();
-                
+
                 // Get likes for this post
                 let likes_query = "
                     SELECT post_id, user_id
@@ -305,7 +312,7 @@ pub async fn list_posts(
                         vec![]
                     }
                 };
-                
+
                 // Get comments for this post
                 let comments_query = "
                     SELECT comment_id, post_id, author_id, content, created_at, parent_comment_id
@@ -324,7 +331,7 @@ pub async fn list_posts(
                         vec![]
                     }
                 };
-                
+
                 posts_with_details.push(PostWithDetails {
                     post,
                     likes,
@@ -332,14 +339,14 @@ pub async fn list_posts(
                     like_count,
                 });
             }
-            
+
             HttpResponse::Ok().json(PostsResponse {
                 posts: posts_with_details,
                 page,
                 posts_per_page,
                 total_count,
             })
-        },
+        }
         Err(e) => {
             eprintln!("Error listing posts: {:?}", e);
             HttpResponse::InternalServerError().body("Failed to list posts")
@@ -505,9 +512,10 @@ pub async fn toggle_post_like(
 ) -> impl Responder {
     if let Some(claims) = req.extensions().get::<Claims>() {
         let user_id = claims.id;
-        
+
         // First check if the user already liked the post
-        let check_query = "SELECT EXISTS(SELECT 1 FROM post_likes WHERE post_id = $1 AND user_id = $2)";
+        let check_query =
+            "SELECT EXISTS(SELECT 1 FROM post_likes WHERE post_id = $1 AND user_id = $2)";
         let already_liked = match sqlx::query_scalar::<_, bool>(check_query)
             .bind(payload.post_id)
             .bind(user_id)
@@ -520,7 +528,7 @@ pub async fn toggle_post_like(
                 return HttpResponse::InternalServerError().body("Failed to check like status");
             }
         };
-        
+
         if already_liked {
             // Unlike the post
             let query = "DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2";
@@ -529,7 +537,7 @@ pub async fn toggle_post_like(
                 .bind(user_id)
                 .execute(pool.get_ref())
                 .await;
-                
+
             match result {
                 Ok(res) => {
                     if res.rows_affected() > 0 {
@@ -584,7 +592,7 @@ pub async fn toggle_post_like(
                 .bind(user_id)
                 .fetch_one(pool.get_ref())
                 .await;
-                
+
             match result {
                 Ok(like) => {
                     // Get the post author to notify them
@@ -726,7 +734,7 @@ pub async fn create_comment(
     }
 }
 
-// Update Comment Request   
+// Update Comment Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UpdateCommentRequest {
     pub content: Option<String>,
@@ -885,8 +893,6 @@ pub async fn delete_comment(
     }
 }
 
-
-
 // Feed Routes
 // GET /feed/posts - List posts with pagination and optional tag filtering
 // POST /feed/posts/new - Create a new post
@@ -915,4 +921,3 @@ pub fn config_feed_routes(cfg: &mut web::ServiceConfig) {
             .route("/comments/{id}", web::delete().to(delete_comment)),
     );
 }
-

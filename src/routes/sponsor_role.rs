@@ -1,18 +1,20 @@
-use actix_web::{web, HttpRequest, HttpResponse, Responder, HttpMessage};
-use sqlx::PgPool;
-use serde::{Deserialize, Serialize};
-use chrono::NaiveDateTime;
-use uuid::Uuid;
 use crate::handlers::auth::Claims;
-use crate::models::all_models::{ApplicationStatus,UserRole};
-use serde_json::json;
 use crate::handlers::ws::send_to_role;
-// Sponsor Application Request
-#[derive(Debug, Deserialize,Serialize)]
+use crate::models::all_models::{ApplicationStatus, UserRole};
+use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use chrono::NaiveDateTime;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::PgPool;
+use uuid::Uuid;
+
+//Sponsor Application Request
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SponsorApplicationRequest {
     pub application_info: String,
 }
-// Sponsor Application
+
+//Sponsor Application
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct SponsorApplication {
     pub application_id: Uuid,
@@ -23,9 +25,10 @@ pub struct SponsorApplication {
     pub admin_comments: Option<String>,
     pub created_at: NaiveDateTime,
 }
-// Submit Sponsor Application
-// Submit Sponsor Application Input: SponsorApplicationRequest
-// Submit Sponsor Application Output: SponsorApplication
+
+//Submit Sponsor Application
+//Submit Sponsor Application Input: HttpRequest(JWT Token), SponsorApplicationRequest
+//Submit Sponsor Application Output: SponsorApplication
 pub async fn submit_sponsor_application(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -44,21 +47,24 @@ pub async fn submit_sponsor_application(
             Ok(Some(status)) => {
                 // If application exists and is approved, user cannot reapply
                 if status == ApplicationStatus::Approved {
-                    return HttpResponse::Forbidden().body("You already have an approved sponsor application.");
+                    return HttpResponse::Forbidden()
+                        .body("You already have an approved sponsor application.");
                 }
                 // If application exists but is pending or rejected, user should update instead
-                return HttpResponse::Conflict().body("You already have an application. Please use the update endpoint instead.");
-            },
+                return HttpResponse::Conflict().body(
+                    "You already have an application. Please use the update endpoint instead.",
+                );
+            }
             Ok(None) | Err(_) => {
                 // No existing application, proceed with creating a new one
                 let insert_query = "
                     INSERT INTO sponsor_applications (user_id, status, application_info, created_at)
                     VALUES ($1, $2, $3, NOW())
                     RETURNING application_id, user_id, status, application_info, reviewed_by, admin_comments, created_at";
-                
+
                 let application_result = sqlx::query_as::<_, SponsorApplication>(insert_query)
                     .bind(&claims.id)
-                    .bind(ApplicationStatus::Pending) 
+                    .bind(ApplicationStatus::Pending)
                     .bind(&payload.application_info)
                     .fetch_one(pool.get_ref())
                     .await;
@@ -82,8 +88,10 @@ pub async fn submit_sponsor_application(
                         send_to_role(&admin_role, notification).await;
 
                         HttpResponse::Ok().json(application)
-                    },
-                    Err(_) => HttpResponse::InternalServerError().body("Failed to submit application"),
+                    }
+                    Err(_) => {
+                        HttpResponse::InternalServerError().body("Failed to submit application")
+                    }
                 }
             }
         }
@@ -92,9 +100,9 @@ pub async fn submit_sponsor_application(
     }
 }
 
-// Check Sponsor Application Status Handler
-// Check Sponsor Application Status Input: JWT Token
-// Check Sponsor Application Status Output: SponsorApplication
+//Check Sponsor Application Status
+//Check Sponsor Application Status Input: HttpRequest(JWT Token)
+//Check Sponsor Application Status Output: SponsorApplication
 pub async fn check_sponsor_application_status(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -116,14 +124,15 @@ pub async fn check_sponsor_application_status(
     }
 }
 
-// Update Sponsor Application Request
-#[derive(Debug, Deserialize,Serialize)]
+//Update Sponsor Application Request
+#[derive(Debug, Deserialize, Serialize)]
 pub struct UpdateSponsorApplicationRequest {
     pub application_info: String,
 }
-// Update Sponsor Application Handler
-// Update Sponsor Application Input: UpdateSponsorApplicationRequest
-// Update Sponsor Application Output: SponsorApplication
+
+//Update Sponsor Application
+//Update Sponsor Application Input: HttpRequest(JWT Token), UpdateSponsorApplicationRequest
+//Update Sponsor Application Output: SponsorApplication
 pub async fn update_sponsor_application(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -132,7 +141,7 @@ pub async fn update_sponsor_application(
     if let Some(claims) = req.extensions().get::<Claims>() {
         // Check if application exists and get its status
         let check_query = "SELECT status FROM sponsor_applications WHERE user_id = $1";
-        
+
         let result: Result<ApplicationStatus, sqlx::Error> = sqlx::query_scalar(check_query)
             .bind(&claims.id)
             .fetch_one(pool.get_ref())
@@ -142,7 +151,8 @@ pub async fn update_sponsor_application(
             Ok(status) => {
                 // If application is approved, user cannot update it
                 if status == ApplicationStatus::Approved {
-                    return HttpResponse::Forbidden().body("You cannot update an approved application.");
+                    return HttpResponse::Forbidden()
+                        .body("You cannot update an approved application.");
                 }
 
                 // Update application - if rejected, set back to pending
@@ -171,26 +181,29 @@ pub async fn update_sponsor_application(
                                 "created_at": application.created_at
                             }
                         });
-        
+
                         // Send notification to admin users via websocket
                         let admin_role = UserRole::Admin;
                         send_to_role(&admin_role, notification).await;
-        
+
                         HttpResponse::Ok().json(application)
-                    },
-                    Err(_) => HttpResponse::InternalServerError().body("Failed to update application."),
+                    }
+                    Err(_) => {
+                        HttpResponse::InternalServerError().body("Failed to update application.")
+                    }
                 }
             }
-            Err(_) => HttpResponse::NotFound().body("No sponsor application found. Please submit an application first."),
+            Err(_) => HttpResponse::NotFound()
+                .body("No sponsor application found. Please submit an application first."),
         }
     } else {
         HttpResponse::Unauthorized().body("Authentication required")
     }
 }
 
-// Delete Sponsor Application Handler
-// Delete Sponsor Application Input: JWT Token
-// Delete Sponsor Application Output: String
+//Delete Sponsor Application
+//Delete Sponsor Application Input: HttpRequest(JWT Token)
+//Delete Sponsor Application Output: Success message
 pub async fn delete_sponsor_application(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -198,7 +211,7 @@ pub async fn delete_sponsor_application(
     if let Some(claims) = req.extensions().get::<Claims>() {
         // Check if application exists and get its status
         let check_query = "SELECT status FROM sponsor_applications WHERE user_id = $1";
-        
+
         let result: Result<ApplicationStatus, sqlx::Error> = sqlx::query_scalar(check_query)
             .bind(&claims.id)
             .fetch_one(pool.get_ref())
@@ -208,7 +221,8 @@ pub async fn delete_sponsor_application(
             Ok(status) => {
                 // If application is approved, user cannot delete it
                 if status == ApplicationStatus::Approved {
-                    return HttpResponse::Forbidden().body("You cannot delete an approved application.");
+                    return HttpResponse::Forbidden()
+                        .body("You cannot delete an approved application.");
                 }
 
                 // Delete the application
@@ -221,7 +235,8 @@ pub async fn delete_sponsor_application(
 
                 match result {
                     Ok(_) => HttpResponse::Ok().body("Sponsor application deleted successfully."),
-                    Err(_) => HttpResponse::InternalServerError().body("Failed to delete sponsor application."),
+                    Err(_) => HttpResponse::InternalServerError()
+                        .body("Failed to delete sponsor application."),
                 }
             }
             Err(_) => HttpResponse::NotFound().body("No sponsor application found."),
@@ -231,18 +246,17 @@ pub async fn delete_sponsor_application(
     }
 }
 
-// Config Sponsor Routes
+//Config Sponsor Routes
 // POST /sponsor/apply
-// GET /sponsor/check
-// PATCH /sponsor/update
-// DELETE /sponsor/delete
+// GET /sponsor/application-status
+// PUT /sponsor/update-application
+// DELETE /sponsor/delete-application
 pub fn config_sponsor_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
-        web::scope("/sponsor") 
-            .route("/apply", web::post().to(submit_sponsor_application)) 
+        web::scope("/sponsor")
+            .route("/apply", web::post().to(submit_sponsor_application))
             .route("/check", web::get().to(check_sponsor_application_status))
             .route("/update", web::patch().to(update_sponsor_application))
-            .route("/delete", web::delete().to(delete_sponsor_application)) 
+            .route("/delete", web::delete().to(delete_sponsor_application)),
     );
 }
-

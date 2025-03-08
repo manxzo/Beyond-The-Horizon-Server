@@ -1,5 +1,5 @@
-use crate::handlers::password::{hash_password, verify_password};
 use crate::handlers::auth::generate_jwt;
+use crate::handlers::password::{hash_password, verify_password};
 use crate::models::all_models::UserRole;
 use actix_web::{HttpResponse, Responder, web};
 use chrono::{NaiveDate, NaiveDateTime};
@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 //Create User Request
-#[derive(Deserialize,Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CreateUserRequest {
     pub username: String,
     pub email: String,
@@ -16,14 +16,15 @@ pub struct CreateUserRequest {
     pub dob: NaiveDate,
 }
 
-//Create User Response
+//Created User Response
 #[derive(sqlx::FromRow, Serialize)]
 pub struct CreatedUserResponse {
     pub user_id: Uuid,
     pub username: String,
     pub avatar_url: String,
 }
-//Create User Handler
+
+//Create User
 //Create User Input: CreateUserRequest
 //Create User Output: CreatedUserResponse
 pub async fn create_user(
@@ -64,13 +65,15 @@ pub async fn create_user(
     }
 }
 
-#[derive(Deserialize,Serialize)]
+//Login Request
+#[derive(Deserialize)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
 }
 
-#[derive(sqlx::FromRow,Serialize,Deserialize)]
+//User Auth
+#[derive(sqlx::FromRow)]
 struct UserAuth {
     pub user_id: Uuid,
     pub username: String,
@@ -80,14 +83,16 @@ struct UserAuth {
     pub banned_until: Option<NaiveDateTime>,
 }
 
-#[derive(Serialize,Deserialize)]
+//Login Response
+#[derive(Serialize)]
 pub struct LoginResponse {
     pub user_id: Uuid,
     pub username: String,
     pub avatar_url: String,
     pub token: String,
 }
-//Login Handler
+
+//Login
 //Login Input: LoginRequest
 //Login Output: LoginResponse
 pub async fn login(pool: web::Data<PgPool>, payload: web::Json<LoginRequest>) -> impl Responder {
@@ -147,14 +152,12 @@ pub async fn login(pool: web::Data<PgPool>, payload: web::Json<LoginRequest>) ->
 }
 
 //Config User Auth Routes
-// POST /users/create
-// POST /users/login
+// POST /auth/register
+// POST /auth/login
 pub fn config_user_auth_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
-        web::scope("/users")
-            .route("/create", web::post().to(create_user))
+        web::scope("/auth")
+            .route("/register", web::post().to(create_user))
             .route("/login", web::post().to(login)),
     );
 }
-
-

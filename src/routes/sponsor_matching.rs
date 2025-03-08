@@ -9,9 +9,9 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-// Recommend Sponsors Handler
-// Recommend Sponsors Input: JWT Token
-// Recommend Sponsors Output: Vec<MatchUser>
+//Recommend Sponsors
+//Recommend Sponsors Input: HttpRequest(JWT Token)
+//Recommend Sponsors Output: Vec<MatchUser>
 pub async fn recommend_sponsors(pool: web::Data<PgPool>, req: HttpRequest) -> impl Responder {
     if let Some(claims) = req.extensions().get::<Claims>() {
         let user_id = claims.id;
@@ -72,15 +72,15 @@ pub async fn recommend_sponsors(pool: web::Data<PgPool>, req: HttpRequest) -> im
     }
 }
 
-// Sponsor Request Input
-#[derive(Debug, Deserialize)]
+//Sponsor Request
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SponsorRequest {
     pub sponsor_id: Uuid,
 }
 
-// Request Sponsor Handler
-// Request Sponsor Input: SponsorRequest
-// Request Sponsor Output: MatchingRequest
+//Request Sponsor
+//Request Sponsor Input: HttpRequest(JWT Token), SponsorRequest
+//Request Sponsor Output: MatchingRequest
 pub async fn request_sponsor(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -155,14 +155,11 @@ pub async fn request_sponsor(
                             "type": "sponsor_request",
                             "message": format!("You have a new sponsorship request from user {}", claims.username)
                         });
-                        
-                        send_to_user(
-                            &payload.sponsor_id,
-                            message,
-                        ).await;
-                        
+
+                        send_to_user(&payload.sponsor_id, message).await;
+
                         HttpResponse::Ok().json(request)
-                    },
+                    }
                     Err(e) => {
                         eprintln!("Failed to request sponsor: {:?}", e);
                         HttpResponse::InternalServerError().body("Failed to request sponsor.")
@@ -179,8 +176,8 @@ pub async fn request_sponsor(
     }
 }
 
-// Matching Request with User Info
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+//Matching Request With User Info
+#[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct MatchingRequestWithUserInfo {
     pub matching_request_id: Uuid,
     pub member_id: Uuid,
@@ -191,9 +188,9 @@ pub struct MatchingRequestWithUserInfo {
     pub avatar_url: String,
 }
 
-// Check Matching Status Handler
-// Check Matching Status Input: JWT Token
-// Check Matching Status Output: Vec<MatchingRequestWithUserInfo>
+//Check Matching Status
+//Check Matching Status Input: HttpRequest(JWT Token)
+//Check Matching Status Output: Vec<MatchingRequestWithUserInfo>
 pub async fn check_matching_status(pool: web::Data<PgPool>, req: HttpRequest) -> impl Responder {
     if let Some(claims) = req.extensions().get::<Claims>() {
         let user_id = claims.id;
@@ -243,16 +240,16 @@ pub async fn check_matching_status(pool: web::Data<PgPool>, req: HttpRequest) ->
     }
 }
 
-// Sponsor Response Input
-#[derive(Debug, Deserialize,Serialize)]
+//Sponsor Response
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SponsorResponse {
     pub matching_request_id: Uuid,
     pub accept: bool,
 }
 
-// Respond to Matching Request Handler
-// Respond to Matching Request Input: SponsorResponse
-// Respond to Matching Request Output: MatchingRequest
+//Respond To Matching Request
+//Respond To Matching Request Input: HttpRequest(JWT Token), SponsorResponse
+//Respond To Matching Request Output: MatchingRequest
 pub async fn respond_to_matching_request(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -299,43 +296,43 @@ pub async fn respond_to_matching_request(
             match result {
                 Ok(updated_request) => {
                     // Send notification to member via websocket
-                    let status_text = if payload.accept { "accepted" } else { "declined" };
+                    let status_text = if payload.accept {
+                        "accepted"
+                    } else {
+                        "declined"
+                    };
                     let message = serde_json::json!({
                         "type": "sponsor_response",
                         "message": format!("Your sponsorship request has been {} by {}", status_text, claims.username)
                     });
-                    
-                    send_to_user(
-                        &member_id,
-                        message,
-                    ).await;
-                    
+
+                    send_to_user(&member_id, message).await;
+
                     HttpResponse::Ok().json(updated_request)
-                },
+                }
                 Err(e) => {
                     eprintln!("Failed to update matching request: {:?}", e);
                     HttpResponse::InternalServerError().body("Failed to update request.")
                 }
             }
         } else {
-            HttpResponse::BadRequest()
-                .body("This request is not directed to this sponsor.")
+            HttpResponse::BadRequest().body("This request is not directed to this sponsor.")
         }
     } else {
         HttpResponse::Unauthorized().body("Authentication required")
     }
 }
 
-// Config Matching Routes
-// GET /matching/recommend
-// POST /matching/request
+//Config Matching Routes
+// GET /matching/recommend-sponsors
+// POST /matching/request-sponsor
 // GET /matching/status
 // PATCH /matching/respond
 pub fn config_matching_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/matching")
-            .route("/recommend", web::get().to(recommend_sponsors))
-            .route("/request", web::post().to(request_sponsor))
+            .route("/recommend-sponsors", web::get().to(recommend_sponsors))
+            .route("/request-sponsor", web::post().to(request_sponsor))
             .route("/status", web::get().to(check_matching_status))
             .route("/respond", web::patch().to(respond_to_matching_request)),
     );

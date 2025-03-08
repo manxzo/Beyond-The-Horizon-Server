@@ -9,7 +9,7 @@ use handlers::{db::connect_db, ws::init_ws_routes};
 use log::{debug, info};
 use middleware::{auth_middleware::AuthMiddleware, request_logger::RequestLogger};
 use routes::{
-    group_chats::config_group_chat_routes, posts::config_feed_routes,
+    admin::config_admin_routes, group_chats::config_group_chat_routes, posts::config_feed_routes,
     private_messaging::config_message_routes, report::config_report_routes,
     resources::config_resource_routes, sponsor_matching::config_matching_routes,
     sponsor_role::config_sponsor_routes, support_group_meetings::config_meeting_routes,
@@ -72,6 +72,12 @@ async fn main() -> IoResult<()> {
                             .configure(config_report_routes)
                             .configure(init_ws_routes),
                     ),
+            )
+            // Add admin routes with admin middleware
+            .service(
+                web::scope("/api/admin")
+                    .wrap(AuthMiddleware)
+                    .configure(config_admin_routes),
             )
     })
     .bind(&bind_address)?

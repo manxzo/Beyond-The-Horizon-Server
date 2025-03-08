@@ -7,6 +7,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+//Create Report Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateReportRequest {
     pub reported_user_id: Uuid,
@@ -15,6 +16,9 @@ pub struct CreateReportRequest {
     pub reported_item_id: Uuid,
 }
 
+//Create Report
+//Create Report Input: HttpRequest(JWT Token), CreateReportRequest
+//Create Report Output: Uuid (report_id)
 pub async fn create_report(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -153,9 +157,8 @@ pub async fn create_report(
     }
 }
 
-// Optionally, add a configuration function to register the route:
+//Config Report Routes
+// POST /reports/new
 pub fn config_report_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(web::scope("/reports").route("/new", web::post().to(create_report)));
 }
-
-// POST /reports/new

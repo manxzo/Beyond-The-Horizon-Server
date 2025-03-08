@@ -8,7 +8,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-// Create Support Group Meeting Request
+//Create Support Group Meeting Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateSupportGroupMeetingRequest {
     pub support_group_id: Uuid,
@@ -17,9 +17,9 @@ pub struct CreateSupportGroupMeetingRequest {
     pub scheduled_time: NaiveDateTime,
 }
 
-// Create Support Group Meeting Handler
-// Create Support Group Meeting Input: CreateSupportGroupMeetingRequest
-// Create Support Group Meeting Output: GroupMeeting
+//Create Support Group Meeting
+//Create Support Group Meeting Input: HttpRequest(JWT Token), CreateSupportGroupMeetingRequest
+//Create Support Group Meeting Output: GroupMeeting
 pub async fn create_support_group_meeting(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -118,15 +118,15 @@ pub async fn create_support_group_meeting(
     }
 }
 
-// Join Meeting Request
+//Join Meeting Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct JoinMeetingRequest {
     pub meeting_id: Uuid,
 }
 
-// Join Meeting Handler
-// Join Meeting Input: JoinMeetingRequest
-// Join Meeting Output: MeetingParticipant
+//Join Meeting
+//Join Meeting Input: HttpRequest(JWT Token), JoinMeetingRequest
+//Join Meeting Output: MeetingParticipant
 pub async fn join_meeting(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -247,9 +247,9 @@ pub async fn join_meeting(
     }
 }
 
-// Leave Meeting Handler
-// Leave Meeting Input: LeaveMeetingRequest
-// Leave Meeting Output: String
+//Leave Meeting
+//Leave Meeting Input: HttpRequest(JWT Token), Path (/meetings/{meeting_id}/leave)
+//Leave Meeting Output: Success message
 pub async fn leave_meeting(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -346,9 +346,9 @@ pub async fn leave_meeting(
     }
 }
 
-// Get Meeting Participants Handler
-// Get Meeting Participants Input: GetMeetingParticipantsRequest
-// Get Meeting Participants Output: Vec<MeetingParticipant>
+//Get Meeting Participants
+//Get Meeting Participants Input: Path (/meetings/{meeting_id}/participants)
+//Get Meeting Participants Output: Vec<MeetingParticipant>
 pub async fn get_meeting_participants(
     pool: web::Data<PgPool>,
     path: web::Path<Uuid>, // meeting_id passed in URL
@@ -371,9 +371,9 @@ pub async fn get_meeting_participants(
     }
 }
 
-// Start Meeting Handler
-// Start Meeting Input: StartMeetingRequest
-// Start Meeting Output: GroupMeeting
+//Start Meeting
+//Start Meeting Input: HttpRequest(JWT Token), Path (/meetings/{meeting_id}/start)
+//Start Meeting Output: GroupMeeting
 pub async fn start_meeting(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -522,9 +522,9 @@ pub async fn start_meeting(
     }
 }
 
-// End Meeting Handler
-// End Meeting Input: EndMeetingRequest
-// End Meeting Output: GroupMeeting
+//End Meeting
+//End Meeting Input: HttpRequest(JWT Token), Path (/meetings/{meeting_id}/end)
+//End Meeting Output: GroupMeeting
 pub async fn end_meeting(
     pool: web::Data<PgPool>,
     req: HttpRequest,
@@ -635,9 +635,10 @@ pub async fn end_meeting(
     }
 }
 
-// Config Meeting Routes
-// POST /meetings/{meeting_id}/join
-// DELETE /meetings/{meeting_id}/leave
+//Config Meeting Routes
+// POST /meetings/create
+// POST /meetings/join
+// POST /meetings/{meeting_id}/leave
 // GET /meetings/{meeting_id}/participants
 // POST /meetings/{meeting_id}/start
 // POST /meetings/{meeting_id}/end

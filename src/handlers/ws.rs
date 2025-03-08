@@ -1,5 +1,5 @@
 use crate::handlers::auth::Claims;
-use crate::models::all_models::{Announcement, UserRole};
+use crate::models::all_models::UserRole;
 use actix::{Actor, AsyncContext, StreamHandler};
 use actix_web::{Error, HttpMessage, HttpRequest, HttpResponse, Responder, web};
 use actix_web_actors::ws;
@@ -52,7 +52,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketSession 
 }
 
 /// WebSocket connection handler
-async fn ws_connect(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
+pub async fn ws_connect(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
     if let Some(claims) = req.extensions().get::<Claims>() {
         let user_id = claims.id;
         let role = claims.role;
@@ -121,26 +121,26 @@ pub async fn send_to_all(payload: Value) {
 
 // Request/Response structs for handlers
 #[derive(Deserialize, Serialize)]
-struct SendToUserRequest {
-    user_id: Uuid,
-    payload: Value,
+pub struct SendToUserRequest {
+    pub user_id: Uuid,
+    pub payload: Value,
 }
 
 #[derive(Deserialize, Serialize)]
-struct SendToRoleRequest {
-    role: UserRole,
-    payload: Value,
+pub struct SendToRoleRequest {
+    pub role: UserRole,
+    pub payload: Value,
 }
 
-#[derive(Deserialize)]
-struct SendToUsersRequest {
-    user_ids: Vec<Uuid>,
-    payload: Value,
+#[derive(Deserialize,Serialize)]
+pub struct SendToUsersRequest {
+    pub user_ids: Vec<Uuid>,
+    pub payload: Value,
 }
 
 #[derive(Deserialize, Serialize)]
-struct SendToAllRequest {
-    payload: Value,
+pub struct SendToAllRequest {
+    pub payload: Value,
 }
 
 // Handler functions for routes

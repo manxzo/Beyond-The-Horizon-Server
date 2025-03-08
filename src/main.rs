@@ -5,7 +5,7 @@ mod routes;
 
 use actix_web::{App, HttpServer, middleware::Logger, web};
 use env_logger::Env;
-use handlers::db::connect_db;
+use handlers::{db::connect_db, ws::init_ws_routes};
 use log::{debug, info};
 use middleware::{auth_middleware::AuthMiddleware, request_logger::RequestLogger};
 use routes::{
@@ -65,7 +65,8 @@ async fn main() -> IoResult<()> {
                             .configure(config_matching_routes)
                             .configure(config_sponsor_routes)
                             .configure(config_support_group_routes)
-                            .configure(config_meeting_routes),
+                            .configure(config_meeting_routes)
+                            .configure(init_ws_routes)
                     ),
             )
     })

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use chrono::NaiveDateTime;
 use uuid::Uuid;
 use crate::handlers::auth::Claims;
-use crate::models::all_models::{ApplicationStatus,UserRole,Announcement,AnnouncementTarget,AnnouncementType};
+use crate::models::all_models::{ApplicationStatus,UserRole};
 use serde_json::json;
 use crate::handlers::ws::send_to_role;
 // Sponsor Application Request

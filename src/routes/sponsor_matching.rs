@@ -276,7 +276,7 @@ pub async fn respond_to_matching_request(
             .await
             .unwrap_or(None);
 
-        if let Some((member_id, member_username)) = member_info {
+        if let Some((member_id, _member_username)) = member_info {
             let update_query = "
                 UPDATE matching_requests 
                 SET status = $1 

@@ -9,10 +9,12 @@ use handlers::{db::connect_db, ws::init_ws_routes};
 use log::{debug, info};
 use middleware::{auth_middleware::AuthMiddleware, request_logger::RequestLogger};
 use routes::{
-    posts::config_feed_routes, private_messaging::config_message_routes,
-    sponsor_matching::config_matching_routes, sponsor_role::config_sponsor_routes,
-    support_group_meetings::config_meeting_routes, support_groups::config_support_group_routes,
-    user_auth::config_user_auth_routes, user_data::config_user_data_routes,
+    group_chats::config_group_chat_routes, posts::config_feed_routes,
+    private_messaging::config_message_routes, report::config_report_routes,
+    resources::config_resource_routes, sponsor_matching::config_matching_routes,
+    sponsor_role::config_sponsor_routes, support_group_meetings::config_meeting_routes,
+    support_groups::config_support_group_routes, user_auth::config_user_auth_routes,
+    user_data::config_user_data_routes,
 };
 use std::env;
 use std::io::Result as IoResult;
@@ -54,8 +56,7 @@ async fn main() -> IoResult<()> {
             .wrap(RequestLogger)
             .service(
                 web::scope("/api")
-                    .service(web::scope("/public")
-                        .configure(config_user_auth_routes))
+                    .service(web::scope("/public").configure(config_user_auth_routes))
                     .service(
                         web::scope("/protected")
                             .wrap(AuthMiddleware)
@@ -66,7 +67,10 @@ async fn main() -> IoResult<()> {
                             .configure(config_sponsor_routes)
                             .configure(config_support_group_routes)
                             .configure(config_meeting_routes)
-                            .configure(init_ws_routes)
+                            .configure(config_group_chat_routes)
+                            .configure(config_resource_routes)
+                            .configure(config_report_routes)
+                            .configure(init_ws_routes),
                     ),
             )
     })

@@ -6,3 +6,6 @@ pub mod support_group_meetings;
 pub mod private_messaging;
 pub mod sponsor_matching;
 pub mod posts;
+pub mod group_chats;
+pub mod resources;
+pub mod report;

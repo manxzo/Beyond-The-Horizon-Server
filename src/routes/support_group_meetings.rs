@@ -1,6 +1,6 @@
 use crate::handlers::auth::Claims;
 use crate::handlers::ws;
-use crate::models::all_models::{GroupMeeting,MeetingParticipant,GroupChat};
+use crate::models::all_models::{GroupChat, GroupMeeting, MeetingParticipant};
 use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -31,39 +31,73 @@ pub async fn create_support_group_meeting(
             SELECT group_chat_id FROM support_groups 
             WHERE support_group_id = $1 AND status = 'approved'
         ";
-        let group_chat_id: Option<Uuid> = sqlx::query_scalar(sg_query)
+        let group_chat_id: Option<Uuid> = match sqlx::query_scalar(sg_query)
             .bind(payload.support_group_id)
             .fetch_optional(pool.get_ref())
             .await
-            .unwrap_or(None);
+        {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("Error fetching support group: {:?}", e);
+                return HttpResponse::InternalServerError().body("Failed to verify support group");
+            }
+        };
+
         if group_chat_id.is_none() {
             return HttpResponse::BadRequest().body("Support group not found or not approved");
         }
         let group_chat_id = group_chat_id.unwrap();
 
         let query = "
-            INSERT INTO group_meetings (group_chat_id, host_id, title, description, scheduled_time)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO group_meetings (group_chat_id, host_id, title, description, scheduled_time, support_group_id, status)
+            VALUES ($1, $2, $3, $4, $5, $6, 'upcoming')
             RETURNING meeting_id, group_chat_id, host_id, title, description, scheduled_time
         ";
         let meeting = sqlx::query_as::<_, GroupMeeting>(query)
             .bind(group_chat_id)
-            .bind(claims.id) 
+            .bind(claims.id)
             .bind(&payload.title)
             .bind(&payload.description)
             .bind(&payload.scheduled_time)
+            .bind(payload.support_group_id)
             .fetch_one(pool.get_ref())
             .await;
         match meeting {
             Ok(m) => {
-                
+                // Use a transaction to ensure data consistency
+                let mut tx = match pool.begin().await {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        eprintln!("Error starting transaction: {:?}", e);
+                        return HttpResponse::InternalServerError()
+                            .body("Failed to process meeting creation");
+                    }
+                };
+
                 let member_query =
                     "SELECT user_id FROM support_group_members WHERE support_group_id = $1";
-                let member_ids: Vec<Uuid> = sqlx::query_scalar(member_query)
+                let member_ids: Vec<Uuid> = match sqlx::query_scalar(member_query)
                     .bind(payload.support_group_id)
-                    .fetch_all(pool.get_ref())
+                    .fetch_all(&mut *tx)
                     .await
-                    .unwrap_or_default();
+                {
+                    Ok(ids) => ids,
+                    Err(e) => {
+                        eprintln!("Error fetching support group members: {:?}", e);
+                        let _ = tx.rollback().await;
+                        return HttpResponse::InternalServerError()
+                            .body("Failed to notify members");
+                    }
+                };
+
+                // Commit the transaction
+                if let Err(e) = tx.commit().await {
+                    eprintln!("Error committing transaction: {:?}", e);
+                    return HttpResponse::InternalServerError()
+                        .body("Failed to complete meeting creation");
+                }
+
+                // Send WebSocket notifications
                 let ws_payload = json!({
                     "type": "new_meeting",
                     "meeting": m,
@@ -71,6 +105,7 @@ pub async fn create_support_group_meeting(
                 for member_id in member_ids {
                     ws::send_to_user(&member_id, ws_payload.clone()).await;
                 }
+
                 HttpResponse::Ok().json(m)
             }
             Err(e) => {
@@ -99,40 +134,114 @@ pub async fn join_meeting(
 ) -> impl Responder {
     if let Some(claims) = req.extensions().get::<Claims>() {
         let user_id = claims.id; // Claims.id is already a Uuid
+
+        // Start a transaction
+        let mut tx = match pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                eprintln!("Error starting transaction: {:?}", e);
+                return HttpResponse::InternalServerError().body("Failed to process join request");
+            }
+        };
+
+        // Check if the meeting exists and is upcoming or ongoing
+        let meeting_check = "SELECT status FROM group_meetings WHERE meeting_id = $1";
+        let meeting_status = match sqlx::query_scalar::<_, String>(meeting_check)
+            .bind(payload.meeting_id)
+            .fetch_optional(&mut *tx)
+            .await
+        {
+            Ok(Some(status)) => status,
+            Ok(None) => {
+                let _ = tx.rollback().await;
+                return HttpResponse::NotFound().body("Meeting not found");
+            }
+            Err(e) => {
+                eprintln!("Error checking meeting status: {:?}", e);
+                let _ = tx.rollback().await;
+                return HttpResponse::InternalServerError().body("Failed to verify meeting");
+            }
+        };
+
+        if meeting_status != "upcoming" && meeting_status != "ongoing" {
+            let _ = tx.rollback().await;
+            return HttpResponse::BadRequest().body("Cannot join a meeting that has ended");
+        }
+
+        // Check if user is already a participant
+        let check_query =
+            "SELECT COUNT(*) FROM meeting_participants WHERE meeting_id = $1 AND user_id = $2";
+        let count: i64 = match sqlx::query_scalar(check_query)
+            .bind(payload.meeting_id)
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(count) => count,
+            Err(e) => {
+                eprintln!("Error checking existing participation: {:?}", e);
+                let _ = tx.rollback().await;
+                return HttpResponse::InternalServerError().body("Failed to check participation");
+            }
+        };
+
+        if count > 0 {
+            let _ = tx.rollback().await;
+            return HttpResponse::Conflict().body("You are already a participant in this meeting");
+        }
+
+        // Insert the participant
         let query = "
             INSERT INTO meeting_participants (meeting_id, user_id)
             VALUES ($1, $2)
             RETURNING meeting_id, user_id
         ";
-        let participant = sqlx::query(query)
+        let participant = match sqlx::query_as::<_, MeetingParticipant>(query)
             .bind(payload.meeting_id)
             .bind(user_id)
-            .fetch_one(pool.get_ref())
-            .await;
-        match participant {
-            Ok(_row) => {
-                // Optionally notify the host that a new participant has joined.
-                let host_query = "SELECT host_id FROM group_meetings WHERE meeting_id = $1";
-                if let Ok(host_id) = sqlx::query_scalar::<_, Uuid>(host_query)
-                    .bind(payload.meeting_id)
-                    .fetch_one(pool.get_ref())
-                    .await
-                {
-                    let ws_payload = json!({
-                        "type": "meeting_joined",
-                        "meeting_id": payload.meeting_id,
-                        "user_id": user_id,
-                    });
-                    ws::send_to_user(&host_id, ws_payload).await;
-                }
-                HttpResponse::Ok()
-                    .json(json!({"meeting_id": payload.meeting_id, "user_id": user_id}))
-            }
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(p) => p,
             Err(e) => {
                 eprintln!("Error joining meeting: {:?}", e);
-                HttpResponse::InternalServerError().body("Failed to join meeting")
+                let _ = tx.rollback().await;
+                return HttpResponse::InternalServerError().body("Failed to join meeting");
             }
+        };
+
+        // Get the host ID to notify them
+        let host_query = "SELECT host_id FROM group_meetings WHERE meeting_id = $1";
+        let host_id = match sqlx::query_scalar::<_, Uuid>(host_query)
+            .bind(payload.meeting_id)
+            .fetch_optional(&mut *tx)
+            .await
+        {
+            Ok(Some(id)) => Some(id),
+            Ok(None) => None,
+            Err(e) => {
+                eprintln!("Error fetching host ID: {:?}", e);
+                None
+            }
+        };
+
+        // Commit the transaction
+        if let Err(e) = tx.commit().await {
+            eprintln!("Error committing transaction: {:?}", e);
+            return HttpResponse::InternalServerError().body("Failed to complete join process");
         }
+
+        // Send WebSocket notification to the host
+        if let Some(host_id) = host_id {
+            let ws_payload = json!({
+                "type": "meeting_joined",
+                "meeting_id": payload.meeting_id,
+                "user_id": user_id,
+            });
+            ws::send_to_user(&host_id, ws_payload).await;
+        }
+
+        HttpResponse::Ok().json(participant)
     } else {
         HttpResponse::Unauthorized().body("Authentication required")
     }
@@ -152,37 +261,86 @@ pub async fn leave_meeting(
         let user_id = claims.id; // Claims.id is already a Uuid
         let meeting_id = path.into_inner();
 
-        // Delete the participant record from the meeting_participants table.
-        let delete_query = "DELETE FROM meeting_participants WHERE meeting_id = $1 AND user_id = $2";
-        let result = sqlx::query(delete_query)
+        // Start a transaction
+        let mut tx = match pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                eprintln!("Error starting transaction: {:?}", e);
+                return HttpResponse::InternalServerError().body("Failed to process leave request");
+            }
+        };
+
+        // Check if the user is actually a participant
+        let check_query =
+            "SELECT COUNT(*) FROM meeting_participants WHERE meeting_id = $1 AND user_id = $2";
+        let count: i64 = match sqlx::query_scalar(check_query)
             .bind(meeting_id)
             .bind(user_id)
-            .execute(pool.get_ref())
-            .await;
-
-        match result {
-            Ok(_) => {
-                // Optionally, fetch the meeting host and notify them that the user left.
-                let host_query = "SELECT host_id FROM group_meetings WHERE meeting_id = $1";
-                if let Ok(host_id) = sqlx::query_scalar::<_, Uuid>(host_query)
-                    .bind(meeting_id)
-                    .fetch_one(pool.get_ref())
-                    .await
-                {
-                    let ws_payload = json!({
-                        "type": "meeting_left",
-                        "meeting_id": meeting_id,
-                        "user_id": user_id,
-                    });
-                    ws::send_to_user(&host_id, ws_payload).await;
-                }
-                HttpResponse::Ok().body("Successfully left the meeting")
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(count) => count,
+            Err(e) => {
+                eprintln!("Error checking participation: {:?}", e);
+                let _ = tx.rollback().await;
+                return HttpResponse::InternalServerError().body("Failed to verify participation");
             }
+        };
+
+        if count == 0 {
+            let _ = tx.rollback().await;
+            return HttpResponse::BadRequest().body("You are not a participant in this meeting");
+        }
+
+        // Delete the participant record from the meeting_participants table.
+        let delete_query =
+            "DELETE FROM meeting_participants WHERE meeting_id = $1 AND user_id = $2";
+        match sqlx::query(delete_query)
+            .bind(meeting_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+        {
+            Ok(_) => {}
             Err(e) => {
                 eprintln!("Error leaving meeting: {:?}", e);
-                HttpResponse::InternalServerError().body("Failed to leave meeting")
+                let _ = tx.rollback().await;
+                return HttpResponse::InternalServerError().body("Failed to leave meeting");
             }
+        };
+
+        // Get the host ID to notify them
+        let host_query = "SELECT host_id FROM group_meetings WHERE meeting_id = $1";
+        let host_id = match sqlx::query_scalar::<_, Uuid>(host_query)
+            .bind(meeting_id)
+            .fetch_optional(&mut *tx)
+            .await
+        {
+            Ok(Some(id)) => Some(id),
+            Ok(None) => None,
+            Err(e) => {
+                eprintln!("Error fetching host ID: {:?}", e);
+                None
+            }
+        };
+
+        // Commit the transaction
+        if let Err(e) = tx.commit().await {
+            eprintln!("Error committing transaction: {:?}", e);
+            return HttpResponse::InternalServerError().body("Failed to complete leave process");
         }
+
+        // Send WebSocket notification to the host
+        if let Some(host_id) = host_id {
+            let ws_payload = json!({
+                "type": "meeting_left",
+                "meeting_id": meeting_id,
+                "user_id": user_id,
+            });
+            ws::send_to_user(&host_id, ws_payload).await;
+        }
+
+        HttpResponse::Ok().body("Successfully left the meeting")
     } else {
         HttpResponse::Unauthorized().body("Authentication required")
     }
@@ -200,13 +358,17 @@ pub async fn get_meeting_participants(
     match sqlx::query_as::<_, MeetingParticipant>(query)
         .bind(meeting_id)
         .fetch_all(pool.get_ref())
-        .await {
-            Ok(participants) => HttpResponse::Ok().json(participants),
-            Err(e) => {
-                eprintln!("Error fetching meeting participants for meeting {}: {:?}", meeting_id, e);
-                HttpResponse::InternalServerError().body("Failed to fetch meeting participants")
-            }
+        .await
+    {
+        Ok(participants) => HttpResponse::Ok().json(participants),
+        Err(e) => {
+            eprintln!(
+                "Error fetching meeting participants for meeting {}: {:?}",
+                meeting_id, e
+            );
+            HttpResponse::InternalServerError().body("Failed to fetch meeting participants")
         }
+    }
 }
 
 // Start Meeting Handler
@@ -220,83 +382,141 @@ pub async fn start_meeting(
     // Ensure the request is authenticated.
     if let Some(claims) = req.extensions().get::<Claims>() {
         let meeting_id = path.into_inner();
-        
+        let user_id = claims.id;
+
+        // Start a transaction
+        let mut tx = match pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                eprintln!("Error starting transaction: {:?}", e);
+                return HttpResponse::InternalServerError()
+                    .body("Failed to process start meeting request");
+            }
+        };
+
         // Fetch the meeting record.
         let meeting_query = "SELECT * FROM group_meetings WHERE meeting_id = $1";
         let meeting: GroupMeeting = match sqlx::query_as(meeting_query)
             .bind(meeting_id)
-            .fetch_one(pool.get_ref())
-            .await {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("Error fetching meeting: {:?}", e);
-                    return HttpResponse::NotFound().body("Meeting not found");
-                }
-            };
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Error fetching meeting: {:?}", e);
+                let _ = tx.rollback().await;
+                return HttpResponse::NotFound().body("Meeting not found");
+            }
+        };
 
         // Ensure the requester is the host.
-        let host_id = claims.id; // Claims.id is already a Uuid
-        if meeting.host_id != host_id {
+        if meeting.host_id != user_id {
+            let _ = tx.rollback().await;
             return HttpResponse::Forbidden().body("Only the host can start the meeting");
         }
 
-        // Create a new group chat for the meeting.
-        let chat_query = "INSERT INTO group_chats (created_at, is_direct) VALUES (NOW(), false) RETURNING group_chat_id, created_at, is_direct";
-        let new_chat: GroupChat = match sqlx::query_as(chat_query)
-            .fetch_one(pool.get_ref())
-            .await {
-                Ok(chat) => chat,
-                Err(e) => {
-                    eprintln!("Error creating meeting chat: {:?}", e);
-                    return HttpResponse::InternalServerError().body("Failed to create meeting chat");
-                }
-            };
+        // Ensure the meeting is in 'upcoming' status
+        match meeting.status {
+            crate::models::all_models::MeetingStatus::Upcoming => {} // This is what we want
+            _ => {
+                let _ = tx.rollback().await;
+                return HttpResponse::BadRequest().body("Meeting is not in 'upcoming' status");
+            }
+        }
 
-        // Update the meeting record: set the new group chat id and mark status as 'ongoing'
-        // (Assuming your meeting_status enum has an 'ongoing' variant and the column is defined accordingly.)
+        // Create a new group chat for the meeting.
+        let chat_query = "INSERT INTO group_chats (creator_id, created_at, flagged) VALUES ($1, NOW(), false) RETURNING group_chat_id, created_at, creator_id";
+        let new_chat: GroupChat = match sqlx::query_as(chat_query)
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(chat) => chat,
+            Err(e) => {
+                eprintln!("Error creating meeting chat: {:?}", e);
+                let _ = tx.rollback().await;
+                return HttpResponse::InternalServerError().body("Failed to create meeting chat");
+            }
+        };
+
+        // Update the meeting status to 'ongoing' and set the meeting chat.
         let update_query = "
             UPDATE group_meetings 
-            SET group_chat_id = $1, status = 'ongoing'
+            SET status = 'ongoing', meeting_chat_id = $1 
             WHERE meeting_id = $2
-            RETURNING *";
+            RETURNING *
+        ";
         let updated_meeting: GroupMeeting = match sqlx::query_as(update_query)
             .bind(new_chat.group_chat_id)
             .bind(meeting_id)
-            .fetch_one(pool.get_ref())
-            .await {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("Error updating meeting: {:?}", e);
-                    return HttpResponse::InternalServerError().body("Failed to update meeting");
-                }
-            };
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Error updating meeting status: {:?}", e);
+                let _ = tx.rollback().await;
+                return HttpResponse::InternalServerError().body("Failed to update meeting status");
+            }
+        };
 
-        // Retrieve all meeting participants.
+        // Get all participants to add them to the meeting chat and notify them.
         let participants_query = "SELECT user_id FROM meeting_participants WHERE meeting_id = $1";
         let participant_ids: Vec<Uuid> = match sqlx::query_scalar(participants_query)
             .bind(meeting_id)
-            .fetch_all(pool.get_ref())
-            .await {
-                Ok(ids) => ids,
-                Err(e) => {
-                    eprintln!("Error fetching meeting participants: {:?}", e);
-                    Vec::new()
-                }
-            };
+            .fetch_all(&mut *tx)
+            .await
+        {
+            Ok(ids) => ids,
+            Err(e) => {
+                eprintln!("Error fetching meeting participants: {:?}", e);
+                let _ = tx.rollback().await;
+                return HttpResponse::InternalServerError().body("Failed to fetch participants");
+            }
+        };
 
-        // Build WebSocket payload.
-        let ws_payload = json!({
-            "type": "meeting_started",
-            "meeting_id": meeting_id,
-            "group_chat_id": new_chat.group_chat_id
-        });
-
-        // Notify all meeting participants via WebSocket.
-        for participant in participant_ids {
-            ws::send_to_user(&participant, ws_payload.clone()).await;
+        // Add all participants to the meeting chat.
+        for participant_id in &participant_ids {
+            let add_member_query = "
+                INSERT INTO group_chat_members (group_chat_id, user_id)
+                VALUES ($1, $2)
+            ";
+            if let Err(e) = sqlx::query(add_member_query)
+                .bind(new_chat.group_chat_id)
+                .bind(participant_id)
+                .execute(&mut *tx)
+                .await
+            {
+                eprintln!("Error adding participant to meeting chat: {:?}", e);
+                // Continue with other participants even if one fails
+            }
         }
 
-        HttpResponse::Ok().json(updated_meeting)
+        // Commit the transaction
+        if let Err(e) = tx.commit().await {
+            eprintln!("Error committing transaction: {:?}", e);
+            return HttpResponse::InternalServerError()
+                .body("Failed to complete meeting start process");
+        }
+
+        // Notify all participants that the meeting has started.
+        let ws_payload = json!({
+            "type": "meeting_started",
+            "meeting": updated_meeting,
+            "meeting_chat_id": new_chat.group_chat_id
+        });
+
+        for participant_id in participant_ids {
+            ws::send_to_user(&participant_id, ws_payload.clone()).await;
+        }
+
+        // Also notify the host
+        ws::send_to_user(&user_id, ws_payload.clone()).await;
+
+        HttpResponse::Ok().json(json!({
+            "meeting": updated_meeting,
+            "meeting_chat": new_chat
+        }))
     } else {
         HttpResponse::Unauthorized().body("Authentication required")
     }
@@ -312,78 +532,102 @@ pub async fn end_meeting(
 ) -> impl Responder {
     if let Some(claims) = req.extensions().get::<Claims>() {
         let meeting_id = path.into_inner();
-        let host_id = claims.id; // Claims.id is already a Uuid
+        let user_id = claims.id;
+
+        // Start a transaction
+        let mut tx = match pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                eprintln!("Error starting transaction: {:?}", e);
+                return HttpResponse::InternalServerError()
+                    .body("Failed to process end meeting request");
+            }
+        };
 
         // Fetch the meeting record.
         let meeting_query = "SELECT * FROM group_meetings WHERE meeting_id = $1";
-        let meeting: GroupMeeting = match sqlx::query_as::<_, GroupMeeting>(meeting_query)
+        let meeting: GroupMeeting = match sqlx::query_as(meeting_query)
             .bind(meeting_id)
-            .fetch_one(pool.get_ref())
-            .await {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("Error fetching meeting: {:?}", e);
-                    return HttpResponse::NotFound().body("Meeting not found");
-                }
-            };
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Error fetching meeting: {:?}", e);
+                let _ = tx.rollback().await;
+                return HttpResponse::NotFound().body("Meeting not found");
+            }
+        };
 
         // Ensure the requester is the host.
-        if meeting.host_id != host_id {
+        if meeting.host_id != user_id {
+            let _ = tx.rollback().await;
             return HttpResponse::Forbidden().body("Only the host can end the meeting");
         }
 
-        // Delete the meeting's group chat if it exists.
-        if let Some(gc_id) = meeting.group_chat_id {
-            let delete_chat_query = "DELETE FROM group_chats WHERE group_chat_id = $1";
-            if let Err(e) = sqlx::query(delete_chat_query)
-                .bind(gc_id)
-                .execute(pool.get_ref())
-                .await {
-                    eprintln!("Error deleting meeting chat: {:?}", e);
-                    // Optionally, you might choose to proceed even if chat deletion fails.
-                }
+        // Ensure the meeting is in 'ongoing' status
+        match meeting.status {
+            crate::models::all_models::MeetingStatus::Ongoing => {} // This is what we want
+            _ => {
+                let _ = tx.rollback().await;
+                return HttpResponse::BadRequest().body("Meeting is not in 'ongoing' status");
+            }
         }
 
-        // Update the meeting record: set status to 'ended' and clear the group_chat_id.
+        // Update the meeting status to 'ended'
         let update_query = "
             UPDATE group_meetings 
-            SET status = 'ended',
-                group_chat_id = NULL
+            SET status = 'ended'
             WHERE meeting_id = $1
             RETURNING *
         ";
-        let updated_meeting: GroupMeeting = match sqlx::query_as::<_, GroupMeeting>(update_query)
+        let updated_meeting: GroupMeeting = match sqlx::query_as(update_query)
             .bind(meeting_id)
-            .fetch_one(pool.get_ref())
-            .await {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("Error updating meeting: {:?}", e);
-                    return HttpResponse::InternalServerError().body("Failed to update meeting");
-                }
-            };
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Error updating meeting status: {:?}", e);
+                let _ = tx.rollback().await;
+                return HttpResponse::InternalServerError().body("Failed to update meeting status");
+            }
+        };
 
-        // Retrieve meeting participants.
+        // Get all participants to notify them.
         let participants_query = "SELECT user_id FROM meeting_participants WHERE meeting_id = $1";
         let participant_ids: Vec<Uuid> = match sqlx::query_scalar(participants_query)
             .bind(meeting_id)
-            .fetch_all(pool.get_ref())
-            .await {
-                Ok(ids) => ids,
-                Err(e) => {
-                    eprintln!("Error fetching meeting participants: {:?}", e);
-                    Vec::new()
-                }
-            };
+            .fetch_all(&mut *tx)
+            .await
+        {
+            Ok(ids) => ids,
+            Err(e) => {
+                eprintln!("Error fetching meeting participants: {:?}", e);
+                let _ = tx.rollback().await;
+                return HttpResponse::InternalServerError().body("Failed to fetch participants");
+            }
+        };
 
-        // Send a WebSocket update to all participants.
+        // Commit the transaction
+        if let Err(e) = tx.commit().await {
+            eprintln!("Error committing transaction: {:?}", e);
+            return HttpResponse::InternalServerError()
+                .body("Failed to complete meeting end process");
+        }
+
+        // Notify all participants that the meeting has ended.
         let ws_payload = json!({
             "type": "meeting_ended",
-            "meeting_id": meeting_id
+            "meeting": updated_meeting
         });
+
         for participant_id in participant_ids {
             ws::send_to_user(&participant_id, ws_payload.clone()).await;
         }
+
+        // Also notify the host
+        ws::send_to_user(&user_id, ws_payload.clone()).await;
 
         HttpResponse::Ok().json(updated_meeting)
     } else {
@@ -394,15 +638,14 @@ pub async fn end_meeting(
 // Config Meeting Routes
 // POST /meetings/{meeting_id}/join
 // DELETE /meetings/{meeting_id}/leave
-// GET /meetings/{meeting_id}/participants 
+// GET /meetings/{meeting_id}/participants
 // POST /meetings/{meeting_id}/start
 // POST /meetings/{meeting_id}/end
 pub fn config_meeting_routes(cfg: &mut web::ServiceConfig) {
     // For creating meetings in a specific support group.
     cfg.service(
         web::scope("/support-groups/{group_id}/meetings")
-            .route("", web::post().to(create_support_group_meeting))
-            
+            .route("", web::post().to(create_support_group_meeting)),
     );
 
     // For operations on individual meetings.
@@ -410,8 +653,11 @@ pub fn config_meeting_routes(cfg: &mut web::ServiceConfig) {
         web::scope("/meetings")
             .route("/{meeting_id}/join", web::post().to(join_meeting))
             .route("/{meeting_id}/leave", web::delete().to(leave_meeting))
-            .route("/{meeting_id}/participants", web::get().to(get_meeting_participants))
+            .route(
+                "/{meeting_id}/participants",
+                web::get().to(get_meeting_participants),
+            )
             .route("/{meeting_id}/start", web::post().to(start_meeting))
-            .route("/{meeting_id}/end", web::post().to(end_meeting))
+            .route("/{meeting_id}/end", web::post().to(end_meeting)),
     );
 }

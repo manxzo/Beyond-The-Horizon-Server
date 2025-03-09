@@ -3,17 +3,22 @@ mod middleware;
 mod models;
 mod routes;
 
+use actix_cors::Cors;
 use actix_identity::IdentityMiddleware;
 use actix_session::{storage::CookieSessionStore, SessionMiddleware};
 use actix_web::{
     cookie::{Key, SameSite},
+    http::header,
     middleware::Logger,
     web, HttpResponse,
 };
 use env_logger::Env;
 use handlers::ws::init_ws_routes;
 use log::info;
-use middleware::{auth_middleware::AuthMiddleware, request_logger::RequestLogger};
+use middleware::{
+    auth_middleware::AuthMiddleware, request_logger::RequestLogger,
+    session_refresh_middleware::SessionRefreshMiddleware,
+};
 use routes::{
     admin::config_admin_routes, group_chats::config_group_chat_routes, posts::config_feed_routes,
     private_messaging::config_message_routes, report::config_report_routes,
@@ -33,14 +38,17 @@ async fn main(
 ) -> ShuttleActixWeb<impl FnOnce(&mut web::ServiceConfig) + Send + Clone + 'static> {
     dotenvy::dotenv().ok();
 
-    // Get JWT secret from secrets
-    let jwt_secret = secrets.get("JWT_SECRET").unwrap_or_else(|| {
-        info!("JWT_SECRET not found in secrets, using default");
-        "default_jwt_secret".to_string()
+    // Get session secret from secrets
+    let session_secret = secrets.get("SESSION_SECRET").unwrap_or_else(|| {
+        // For backward compatibility, try the old JWT_SECRET name
+        secrets.get("JWT_SECRET").unwrap_or_else(|| {
+            info!("SESSION_SECRET not found in secrets, using default");
+            "default_session_secret".to_string()
+        })
     });
 
-    // Set JWT_SECRET environment variable for use in the application
-    env::set_var("JWT_SECRET", jwt_secret.clone());
+    // Create a secret key for cookies from the session secret
+    let secret_key = Key::from(session_secret.as_bytes());
 
     // Get database URL from secrets or environment
     let database_url = secrets.get("DATABASE_URL").unwrap_or_else(|| {
@@ -74,11 +82,54 @@ async fn main(
         info!("Database connection established but verification failed");
     }
 
-    // Create a secret key for cookies from JWT secret
-    let secret_key = Key::from(jwt_secret.as_bytes());
+    // Get allowed origins from environment or use a default
+    // In production, this should be your frontend domain
+    let allowed_origins = env::var("ALLOWED_ORIGINS")
+        .unwrap_or_else(|_| String::from("https://your-frontend-domain.com"));
+
+    // Check if we're in development mode
+    let is_development =
+        env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string()) == "development";
+
+    // Convert to owned strings to avoid borrowing issues
+    let origins: Vec<String> = allowed_origins
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .collect();
 
     // Create a configuration closure for Shuttle
     let config = move |cfg: &mut web::ServiceConfig| {
+        // Configure CORS
+        let cors = Cors::default()
+            .allowed_origin_fn(move |origin, _req_head| {
+                // If no specific origins are defined, allow all
+                if origins.is_empty() {
+                    return true;
+                }
+
+                // Check if the origin is in our allowed list
+                let origin_str = origin.to_str().unwrap_or("");
+                origins.iter().any(|allowed| allowed == origin_str)
+            })
+            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "PATCH"])
+            .allowed_headers(vec![
+                header::AUTHORIZATION,
+                header::ACCEPT,
+                header::CONTENT_TYPE,
+                header::CONTENT_DISPOSITION, // Required for multipart form data
+                header::CONTENT_LENGTH,      // Required for file uploads
+                header::ORIGIN,              // Required for CORS
+                header::ACCESS_CONTROL_REQUEST_METHOD,
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+            ])
+            .expose_headers(vec![
+                header::CONTENT_DISPOSITION,
+                header::CONTENT_LENGTH,
+                header::CONTENT_TYPE,
+            ])
+            .supports_credentials()
+            .max_age(3600);
+
         cfg.app_data(web::Data::new(db_pool.clone()));
         cfg.service(
             web::scope("")
@@ -86,15 +137,25 @@ async fn main(
                     "%a \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T",
                 ))
                 .wrap(RequestLogger)
+                // Add CORS middleware
+                .wrap(cors)
                 // Add Identity and Session middleware
                 .wrap(IdentityMiddleware::default())
                 .wrap(
                     SessionMiddleware::builder(CookieSessionStore::default(), secret_key.clone())
-                        .cookie_secure(true)
+                        .cookie_secure(!is_development) // True in production, false in development
                         .cookie_http_only(true)
-                        .cookie_same_site(SameSite::Lax)
+                        .cookie_same_site(SameSite::None) // None for cross-domain, Lax for same domain
+                        .cookie_name("bth_session".to_string()) // Custom cookie name
+                        .cookie_domain(if is_development {
+                            None
+                        } else {
+                            Some("your-api-domain.com".to_string())
+                        }) // Set to your API domain in production
                         .build(),
                 )
+                // Add session refresh middleware (refresh if less than 30 minutes left)
+                .wrap(SessionRefreshMiddleware::new(30 * 60))
                 // API routes
                 .service(
                     web::scope("/api")

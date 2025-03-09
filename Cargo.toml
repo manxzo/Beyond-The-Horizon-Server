@@ -1,40 +1,41 @@
 [package]
-name = "serv"
+name = "bth-server"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 actix="0.13.5"
-actix-web="4.3.1"
-actix-multipart = "*"
-actix-identity = "0.7.0"
-actix-session = { version = "0.8.0", features = ["cookie-session"] }
-dotenvy = "*"
-serde = { version = "*", features = ["derive"] }
-serde_json = "*"
-sqlx = { version = "*", features = ["runtime-tokio-native-tls", "postgres", "macros","chrono","uuid"] }
-tokio = { version = "*", features = ["full"] }
-jsonwebtoken = "*"
-chrono = { version = "*", features = ["serde"] }
-argon2 = "*"
-rand = "*"  
-futures-util = "*"
-futures-channel = "*"
-uuid = { version = "*", features = ["v4", "serde"] }
-actix-web-actors="*"
-geoutils="*"
-strum="*"
-strum_macros="*"
-lazy_static="*"
+actix-web="4.9.0"
+actix-multipart = "0.7.2"
+actix-identity = "0.8.0"
+actix-session = { version = "0.10.1", features = ["cookie-session"] }
+actix-cors = "0.7.0"
+dotenvy = "0.15.7"
+serde = { version = "1.0.218", features = ["derive"] }
+serde_json = "1.0.140"
+sqlx = { version = "0.8.3", features = ["runtime-tokio-native-tls", "postgres", "macros","chrono","uuid"] }
+tokio = { version = "1.44.0", features = ["full"] }
+jsonwebtoken = "9.3.1"
+chrono = { version = "0.4.40", features = ["serde"] }
+argon2 = "0.5.3"
+rand = "0.9.0"  
+futures-util = "0.3.31"
+futures-channel = "0.3.31"
+uuid = { version = "1.15.1", features = ["v4", "serde"] }
+actix-web-actors="4.3.0"
+geoutils="0.5.1"
+strum="0.27.1"
+strum_macros="0.27.1"
+lazy_static="1.5.0"
 log = "0.4"
-env_logger = "*"
+env_logger = "0.11.6"
 futures = "0.3"
-reqwest = { version = "*", features = ["json", "multipart"] }
-base64 = "*"
-sha1 = "*"
-mime = "*"
-mime_guess = "*"
-sanitize-filename = "*"
+reqwest = { version = "0.12.12", features = ["json", "multipart"] }
+base64 = "0.22.1"
+sha1 = "0.10.6"
+mime = "0.3.17"
+mime_guess = "2.0.5"
+sanitize-filename = "0.6.0"
 # Shuttle dependencies
 shuttle-runtime = "0.52.0"
 shuttle-actix-web = "0.52.0"

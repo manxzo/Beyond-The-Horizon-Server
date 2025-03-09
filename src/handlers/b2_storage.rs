@@ -1,6 +1,6 @@
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use log::{debug, error, info};
-use reqwest::{Client, header};
+use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::env;
@@ -117,7 +117,7 @@ impl B2Client {
 
         // Create basic auth header
         let auth = format!("{}:{}", self.application_key_id, self.application_key);
-        let encoded_auth = general_purpose::STANDARD.encode(auth);
+        let encoded_auth = STANDARD.encode(auth);
 
         // Make the authorization request
         let response = self

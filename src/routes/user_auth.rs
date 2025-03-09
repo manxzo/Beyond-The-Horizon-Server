@@ -177,15 +177,56 @@ pub async fn logout(identity: Identity) -> impl Responder {
     HttpResponse::Ok().json("Logged out successfully")
 }
 
+// Refresh session endpoint
+pub async fn refresh_session(req: HttpRequest) -> impl Responder {
+    if let Some(identity) = req.extensions().get::<Identity>() {
+        match identity.id() {
+            Ok(claims_str) => {
+                // Deserialize the claims
+                match serde_json::from_str::<Claims>(&claims_str) {
+                    Ok(mut claims) => {
+                        // Create new expiration time
+                        let expiration = Utc::now() + Duration::hours(12);
+                        claims.exp = expiration.timestamp() as usize;
+
+                        // Serialize updated claims
+                        let updated_claims_str = match to_string(&claims) {
+                            Ok(s) => s,
+                            Err(_) => {
+                                return HttpResponse::InternalServerError()
+                                    .body("Failed to serialize session data")
+                            }
+                        };
+
+                        // Update the identity with new expiration
+                        if let Err(_) = Identity::login(&req.extensions(), updated_claims_str) {
+                            return HttpResponse::InternalServerError()
+                                .body("Failed to refresh session");
+                        }
+
+                        return HttpResponse::Ok().json("Session refreshed successfully");
+                    }
+                    Err(_) => return HttpResponse::BadRequest().body("Invalid session data"),
+                }
+            }
+            Err(_) => return HttpResponse::Unauthorized().body("Session expired or invalid"),
+        }
+    }
+
+    HttpResponse::Unauthorized().body("Not authenticated")
+}
+
 //Config User Auth Routes
 // POST /auth/register
 // POST /auth/login
 // POST /auth/logout
+// POST /auth/refresh
 pub fn config_user_auth_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/auth")
             .route("/register", web::post().to(create_user))
             .route("/login", web::post().to(login))
-            .route("/logout", web::post().to(logout)),
+            .route("/logout", web::post().to(logout))
+            .route("/refresh", web::post().to(refresh_session)),
     );
 }

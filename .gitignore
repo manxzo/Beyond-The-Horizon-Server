@@ -68,3 +68,7 @@ bth-server-postman.json
 
 # Ignore Cursor IDE settings
 .cursor
+
+#Shuttle files
+.shuttle/
+Shuttle.toml

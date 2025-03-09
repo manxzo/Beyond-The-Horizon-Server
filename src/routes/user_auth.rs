@@ -131,7 +131,7 @@ pub async fn login(
 
             if verified {
                 // Create claims for the session
-                let expiration = Utc::now() + Duration::hours(8);
+                let expiration = Utc::now() + Duration::hours(12);
                 let claims = Claims {
                     id: user.user_id,
                     username: user.username.clone(),

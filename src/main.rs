@@ -43,7 +43,7 @@ async fn main(
         // For backward compatibility, try the old JWT_SECRET name
         secrets.get("JWT_SECRET").unwrap_or_else(|| {
             info!("SESSION_SECRET not found in secrets, using default");
-            "default_session_secret".to_string()
+            "default_session_secret_must_be_at_least_32_bytes_long".to_string()
         })
     });
 
@@ -182,7 +182,6 @@ async fn main(
                         .wrap(AuthMiddleware)
                         .configure(config_admin_routes),
                 )
-                // Health check endpoint
                 .route(
                     "/",
                     web::get().to(|| async {

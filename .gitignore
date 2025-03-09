@@ -71,4 +71,4 @@ bth-server-postman.json
 
 #Shuttle files
 .shuttle/
-Shuttle.toml
+Secrets*.toml

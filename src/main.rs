@@ -39,29 +39,22 @@ async fn main(
     dotenvy::dotenv().ok();
 
     // Get session secret from secrets
-    let session_secret = secrets.get("SESSION_SECRET").unwrap_or_else(|| {
-        // For backward compatibility, try the old JWT_SECRET name
-        secrets.get("JWT_SECRET").unwrap_or_else(|| {
-            info!("SESSION_SECRET not found in secrets, using default");
-            "default_session_secret_must_be_at_least_32_bytes_long".to_string()
-        })
-    });
-
+    let session_secret = secrets.get("SESSION_SECRET").unwrap();
+    println!("SESSION_SECRET: {}", session_secret);
     // Create a secret key for cookies from the session secret
     let secret_key = Key::from(session_secret.as_bytes());
 
-    // Get database URL from secrets or environment
-    let database_url = secrets.get("DATABASE_URL").unwrap_or_else(|| {
-        info!("DATABASE_URL not found in secrets, using environment variable");
-        env::var("DATABASE_URL").expect("DATABASE_URL must be set in environment")
-    });
-
-    // Configure and initialize logger
-    let env = Env::default().filter_or("RUST_LOG", "info,actix_web=info,serv=debug");
+    // Configure and initialize logger safely (won't panic if already initialized)
+    let env = Env::default().filter_or("RUST_LOG", "info,actix_web=debug,serv=debug");
     env_logger::Builder::from_env(env)
         .format_timestamp_millis()
         .format_module_path(true)
-        .init();
+        .try_init()
+        .ok(); // Use try_init() and ignore errors if logger is already initialized
+
+    // Log a startup message to verify logging is working
+    info!("=== Beyond The Horizon API Server Starting ===");
+    info!("Logging initialized at debug level for actix_web");
 
     // Log whether we're running in local or production mode
     if let Ok(port) = env::var("PORT") {
@@ -70,13 +63,18 @@ async fn main(
         info!("Starting BTH API Server with Shuttle...");
     }
 
+    // Get database URL from secrets
+    let database_url = secrets
+        .get("DATABASE_URL")
+        .expect("DATABASE_URL not found in secrets");
+
     // Connect to the database using the connection string
-    let db_pool = PgPool::connect(&database_url)
+    let pool = PgPool::connect(&database_url)
         .await
         .expect("Failed to connect to Postgres");
 
     // Check database connection
-    if handlers::db::check_db_connection(&db_pool).await {
+    if handlers::db::check_db_connection(&pool).await {
         info!("Database connection established and verified");
     } else {
         info!("Database connection established but verification failed");
@@ -130,11 +128,11 @@ async fn main(
             .supports_credentials()
             .max_age(3600);
 
-        cfg.app_data(web::Data::new(db_pool.clone()));
+        cfg.app_data(web::Data::new(pool.clone()));
         cfg.service(
             web::scope("")
                 .wrap(Logger::new(
-                    "%a \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T",
+                    "%t [%s] \"%r\" %b %D ms \"%{Referer}i\" \"%{User-Agent}i\" %a",
                 ))
                 .wrap(RequestLogger)
                 // Add CORS middleware

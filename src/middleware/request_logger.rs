@@ -1,14 +1,11 @@
 use actix_web::{
+    dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     Error,
-    dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready},
 };
 use chrono::Utc;
-use futures::future::{LocalBoxFuture, Ready, ok};
+use futures::future::{ok, LocalBoxFuture, Ready};
 use log::{error, info};
-use std::{
-    rc::Rc,
-    time::Instant,
-};
+use std::{rc::Rc, time::Instant};
 
 // Request logger middleware
 pub struct RequestLogger;
@@ -58,7 +55,7 @@ where
 
         // Log request details
         info!(
-            "[REQUEST] {} - {} {} - Client IP: {} - Timestamp: {}",
+            "[BTH-REQUEST] {} - {} {} - Client IP: {} - Timestamp: {}",
             client_ip, method, path, client_ip, timestamp
         );
 
@@ -71,7 +68,7 @@ where
                 Ok(response) => {
                     let status = response.status();
                     info!(
-                        "[RESPONSE] {} - {} {} - Status: {} - Time: {:.2?} - Timestamp: {}",
+                        "[BTH-RESPONSE] {} - {} {} - Status: {} - Time: {:.2?} - Timestamp: {}",
                         client_ip,
                         method,
                         path,
@@ -82,7 +79,7 @@ where
                 }
                 Err(err) => {
                     error!(
-                        "[ERROR] {} - {} {} - Error: {} - Time: {:.2?} - Timestamp: {}",
+                        "[BTH-ERROR] {} - {} {} - Error: {} - Time: {:.2?} - Timestamp: {}",
                         client_ip, method, path, err, elapsed, timestamp
                     );
                 }

@@ -1,9 +1,11 @@
-use crate::handlers::auth::generate_jwt;
+use crate::handlers::auth::Claims;
 use crate::handlers::password::{hash_password, verify_password};
 use crate::models::all_models::UserRole;
-use actix_web::{HttpResponse, Responder, web};
-use chrono::{NaiveDate, NaiveDateTime};
+use actix_identity::Identity;
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
+use chrono::{Duration, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::to_string;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -43,7 +45,8 @@ pub async fn create_user(
 
     let user_profile = "Nothing to see here...";
 
-    let query = "INSERT INTO users (username, email, password_hash, dob, avatar_url, user_profile) \
+    let query =
+        "INSERT INTO users (username, email, password_hash, dob, avatar_url, user_profile) \
                  VALUES ($1, $2, $3, $4, $5, $6) RETURNING user_id, username, avatar_url";
 
     let result = sqlx::query_as::<_, CreatedUserResponse>(query)
@@ -89,13 +92,16 @@ pub struct LoginResponse {
     pub user_id: Uuid,
     pub username: String,
     pub avatar_url: String,
-    pub token: String,
 }
 
 //Login
 //Login Input: LoginRequest
 //Login Output: LoginResponse
-pub async fn login(pool: web::Data<PgPool>, payload: web::Json<LoginRequest>) -> impl Responder {
+pub async fn login(
+    req: HttpRequest,
+    pool: web::Data<PgPool>,
+    payload: web::Json<LoginRequest>,
+) -> impl Responder {
     // Query the user by username and fetch necessary fields
     let query = "
         SELECT user_id, username, password_hash, avatar_url, role, banned_until 
@@ -124,19 +130,33 @@ pub async fn login(pool: web::Data<PgPool>, payload: web::Json<LoginRequest>) ->
             };
 
             if verified {
-                let token = match generate_jwt(user.user_id, user.username.clone(), user.role) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        eprintln!("Token generation error: {:?}", e);
-                        return HttpResponse::InternalServerError().body("Token generation failed");
+                // Create claims for the session
+                let expiration = Utc::now() + Duration::hours(8);
+                let claims = Claims {
+                    id: user.user_id,
+                    username: user.username.clone(),
+                    role: user.role,
+                    exp: expiration.timestamp() as usize,
+                };
+
+                // Serialize claims to JSON string
+                let claims_str = match to_string(&claims) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return HttpResponse::InternalServerError()
+                            .body("Failed to serialize session data")
                     }
                 };
+
+                // Create identity session
+                if let Err(_) = Identity::login(&req.extensions(), claims_str) {
+                    return HttpResponse::InternalServerError().body("Failed to create session");
+                }
 
                 let response = LoginResponse {
                     user_id: user.user_id,
                     username: user.username,
                     avatar_url: user.avatar_url,
-                    token,
                 };
 
                 HttpResponse::Ok().json(response)
@@ -151,13 +171,21 @@ pub async fn login(pool: web::Data<PgPool>, payload: web::Json<LoginRequest>) ->
     }
 }
 
+// Logout endpoint
+pub async fn logout(identity: Identity) -> impl Responder {
+    identity.logout();
+    HttpResponse::Ok().json("Logged out successfully")
+}
+
 //Config User Auth Routes
 // POST /auth/register
 // POST /auth/login
+// POST /auth/logout
 pub fn config_user_auth_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/auth")
             .route("/register", web::post().to(create_user))
-            .route("/login", web::post().to(login)),
+            .route("/login", web::post().to(login))
+            .route("/logout", web::post().to(logout)),
     );
 }

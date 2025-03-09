@@ -1,10 +1,11 @@
-use crate::handlers::auth::validate_jwt;
+use crate::handlers::auth::Claims;
+use actix_identity::Identity;
 use actix_web::{
-    Error, HttpMessage,
     dev::{Service, ServiceRequest, ServiceResponse, Transform},
-    http::header,
+    Error, HttpMessage,
 };
-use futures_util::future::{Ready, ok};
+use futures_util::future::{ok, Ready};
+use serde_json::from_str;
 use std::{
     future::Future,
     pin::Pin,
@@ -12,7 +13,7 @@ use std::{
     task::{Context, Poll},
 };
 
-/// Middleware for JWT authentication
+/// Middleware for session-based authentication
 pub struct AuthMiddleware;
 
 impl<S, B> Transform<S, ServiceRequest> for AuthMiddleware
@@ -52,41 +53,42 @@ where
     }
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        // Extract Authorization header and clone it to extend its lifetime
-        let auth_header = req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|h| h.to_str().ok())
-            .map(String::from);
-
         let service = self.service.clone();
 
-        // Move cloned auth_header into the async block
         Box::pin(async move {
-            let token = match auth_header {
-                Some(auth) => {
-                    // Clone the token to prevent lifetime issues
-                    let token_str = auth.clone();
-                    match token_str.strip_prefix("Bearer ") {
-                        Some(token) => token.to_string(), // Convert &str to owned String
-                        None => {
-                            return Err(actix_web::error::ErrorUnauthorized(
-                                "Malformed auth header",
-                            ));
+            // Get identity from the request
+            let authenticated = if let Some(id) = req.extensions().get::<Identity>() {
+                // Get user claims from identity
+                match id.id() {
+                    Ok(claims_str) => {
+                        // Deserialize the claims
+                        match from_str::<Claims>(&claims_str) {
+                            Ok(claims) => {
+                                // Store claims in request extensions
+                                req.extensions_mut().insert(claims);
+                                true
+                            }
+                            Err(_) => {
+                                return Err(actix_web::error::ErrorUnauthorized(
+                                    "Invalid session data",
+                                ));
+                            }
                         }
                     }
+                    Err(_) => {
+                        return Err(actix_web::error::ErrorUnauthorized(
+                            "Session expired or invalid",
+                        ));
+                    }
                 }
-                None => return Err(actix_web::error::ErrorUnauthorized("Missing auth header")),
+            } else {
+                return Err(actix_web::error::ErrorUnauthorized("Not authenticated"));
             };
 
-            // Validate the JWT token
-            match validate_jwt(&token) {
-                Ok(claims) => {
-                    // Store claims in request extensions
-                    req.extensions_mut().insert(claims);
-                    service.call(req).await
-                }
-                Err(_) => Err(actix_web::error::ErrorUnauthorized("Invalid token")),
+            if authenticated {
+                service.call(req).await
+            } else {
+                Err(actix_web::error::ErrorUnauthorized("Authentication failed"))
             }
         })
     }

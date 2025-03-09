@@ -3,10 +3,16 @@ mod middleware;
 mod models;
 mod routes;
 
-use actix_web::{App, HttpServer, middleware::Logger, web};
+use actix_identity::IdentityMiddleware;
+use actix_session::{storage::CookieSessionStore, SessionMiddleware};
+use actix_web::{
+    cookie::{Key, SameSite},
+    middleware::Logger,
+    web, HttpResponse,
+};
 use env_logger::Env;
-use handlers::{db::connect_db, ws::init_ws_routes};
-use log::{debug, info};
+use handlers::ws::init_ws_routes;
+use log::info;
 use middleware::{auth_middleware::AuthMiddleware, request_logger::RequestLogger};
 use routes::{
     admin::config_admin_routes, group_chats::config_group_chat_routes, posts::config_feed_routes,
@@ -16,72 +22,115 @@ use routes::{
     support_groups::config_support_group_routes, user_auth::config_user_auth_routes,
     user_data::config_user_data_routes,
 };
+use shuttle_actix_web::ShuttleActixWeb;
+use shuttle_runtime::SecretStore;
+use sqlx::PgPool;
 use std::env;
-use std::io::Result as IoResult;
-#[actix_web::main]
-async fn main() -> IoResult<()> {
-    // Initialize environment variables
+
+#[shuttle_runtime::main]
+async fn main(
+    #[shuttle_runtime::Secrets] secrets: SecretStore,
+) -> ShuttleActixWeb<impl FnOnce(&mut web::ServiceConfig) + Send + Clone + 'static> {
     dotenvy::dotenv().ok();
+
+    // Get JWT secret from secrets
+    let jwt_secret = secrets.get("JWT_SECRET").unwrap_or_else(|| {
+        info!("JWT_SECRET not found in secrets, using default");
+        "default_jwt_secret".to_string()
+    });
+
+    // Set JWT_SECRET environment variable for use in the application
+    env::set_var("JWT_SECRET", jwt_secret.clone());
+
+    // Get database URL from secrets or environment
+    let database_url = secrets.get("DATABASE_URL").unwrap_or_else(|| {
+        info!("DATABASE_URL not found in secrets, using environment variable");
+        env::var("DATABASE_URL").expect("DATABASE_URL must be set in environment")
+    });
+
     // Configure and initialize logger
     let env = Env::default().filter_or("RUST_LOG", "info,actix_web=info,serv=debug");
     env_logger::Builder::from_env(env)
         .format_timestamp_millis()
         .format_module_path(true)
         .init();
-    info!("Starting BTH API Server...");
-    // Log environment information
-    let host = env::var("HOST").unwrap_or_else(|_| "localhost".to_string());
-    let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
-    let bind_address = format!("{}:{}", host, port);
-    info!("Environment Configuration:");
-    info!("   - Binding to: {}", bind_address);
-    debug!(
-        "   - Log level: {}",
-        env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string())
-    );
 
-    // Connect to database
-    let pool = connect_db().await;
-    info!("Database connection established");
+    // Log whether we're running in local or production mode
+    if let Ok(port) = env::var("PORT") {
+        info!("Starting BTH API Server with Shuttle on port {}...", port);
+    } else {
+        info!("Starting BTH API Server with Shuttle...");
+    }
 
-    // Start HTTP server
-    info!("Starting HTTP server at http://{}", bind_address);
-    HttpServer::new(move || {
-        App::new()
-            .app_data(web::Data::new(pool.clone()))
-            // Add logger middleware
-            .wrap(Logger::new(
-                "%a \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T",
-            ))
-            .wrap(RequestLogger)
-            .service(
-                web::scope("/api")
-                    .service(web::scope("/public").configure(config_user_auth_routes))
-                    .service(
-                        web::scope("/protected")
-                            .wrap(AuthMiddleware)
-                            .configure(config_user_data_routes)
-                            .configure(config_feed_routes)
-                            .configure(config_message_routes)
-                            .configure(config_matching_routes)
-                            .configure(config_sponsor_routes)
-                            .configure(config_support_group_routes)
-                            .configure(config_meeting_routes)
-                            .configure(config_group_chat_routes)
-                            .configure(config_resource_routes)
-                            .configure(config_report_routes)
-                            .configure(init_ws_routes),
-                    ),
-            )
-            // Add admin routes with admin middleware
-            .service(
-                web::scope("/api/admin")
-                    .wrap(AuthMiddleware)
-                    .configure(config_admin_routes),
-            )
-    })
-    .bind(&bind_address)?
-    .run()
-    .await
+    // Connect to the database using the connection string
+    let db_pool = PgPool::connect(&database_url)
+        .await
+        .expect("Failed to connect to Postgres");
+
+    // Check database connection
+    if handlers::db::check_db_connection(&db_pool).await {
+        info!("Database connection established and verified");
+    } else {
+        info!("Database connection established but verification failed");
+    }
+
+    // Create a secret key for cookies from JWT secret
+    let secret_key = Key::from(jwt_secret.as_bytes());
+
+    // Create a configuration closure for Shuttle
+    let config = move |cfg: &mut web::ServiceConfig| {
+        cfg.app_data(web::Data::new(db_pool.clone()));
+        cfg.service(
+            web::scope("")
+                .wrap(Logger::new(
+                    "%a \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T",
+                ))
+                .wrap(RequestLogger)
+                // Add Identity and Session middleware
+                .wrap(IdentityMiddleware::default())
+                .wrap(
+                    SessionMiddleware::builder(CookieSessionStore::default(), secret_key.clone())
+                        .cookie_secure(true)
+                        .cookie_http_only(true)
+                        .cookie_same_site(SameSite::Lax)
+                        .build(),
+                )
+                // API routes
+                .service(
+                    web::scope("/api")
+                        .service(web::scope("/public").configure(config_user_auth_routes))
+                        .service(
+                            web::scope("/protected")
+                                .wrap(AuthMiddleware)
+                                .configure(config_user_data_routes)
+                                .configure(config_feed_routes)
+                                .configure(config_message_routes)
+                                .configure(config_matching_routes)
+                                .configure(config_sponsor_routes)
+                                .configure(config_support_group_routes)
+                                .configure(config_meeting_routes)
+                                .configure(config_group_chat_routes)
+                                .configure(config_resource_routes)
+                                .configure(config_report_routes)
+                                .configure(init_ws_routes),
+                        ),
+                )
+                // Admin routes
+                .service(
+                    web::scope("/api/admin")
+                        .wrap(AuthMiddleware)
+                        .configure(config_admin_routes),
+                )
+                // Health check endpoint
+                .route(
+                    "/",
+                    web::get().to(|| async {
+                        HttpResponse::Ok().body("Welcome to Beyond The Horizon API")
+                    }),
+                ),
+        );
+    };
+
+    // Return the configuration for Shuttle
+    Ok(config.into())
 }
-

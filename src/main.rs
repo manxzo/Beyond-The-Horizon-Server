@@ -83,7 +83,7 @@ async fn main(
     // Get allowed origins from environment or use a default
     // In production, this should be your frontend domain
     let allowed_origins = env::var("ALLOWED_ORIGINS")
-        .unwrap_or_else(|_| String::from("https://your-frontend-domain.com"));
+        .unwrap_or_else(|_| String::from("http://localhost:5173"));
 
     // Check if we're in development mode
     let is_development =

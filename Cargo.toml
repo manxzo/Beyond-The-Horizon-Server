@@ -40,3 +40,4 @@ sanitize-filename = "0.6.0"
 shuttle-runtime = "0.52.0"
 shuttle-actix-web = "0.52.0"
 shuttle-shared-db = { version = "0.52.0", features = ["postgres"] }
+anyhow = "1.0.99"

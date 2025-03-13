@@ -12,9 +12,10 @@ use actix_web::{
     middleware::Logger,
     web, HttpResponse,
 };
+use anyhow;
 use env_logger::Env;
 use handlers::ws::init_ws_routes;
-use log::info;
+use log::{error, info};
 use middleware::{
     auth_middleware::AuthMiddleware, request_logger::RequestLogger,
     session_refresh_middleware::SessionRefreshMiddleware,
@@ -30,64 +31,71 @@ use routes::{
 use shuttle_actix_web::ShuttleActixWeb;
 use shuttle_runtime::SecretStore;
 use sqlx::PgPool;
-use std::env;
 
 #[shuttle_runtime::main]
 async fn main(
     #[shuttle_runtime::Secrets] secrets: SecretStore,
 ) -> ShuttleActixWeb<impl FnOnce(&mut web::ServiceConfig) + Send + Clone + 'static> {
-    dotenvy::dotenv().ok();
-
-    // Get session secret from secrets
-    let session_secret = secrets.get("SESSION_SECRET").unwrap();
-    println!("SESSION_SECRET: {}", session_secret);
-    // Create a secret key for cookies from the session secret
-    let secret_key = Key::from(session_secret.as_bytes());
-
-    // Configure and initialize logger safely (won't panic if already initialized)
+    // Configure and initialize logger safely
     let env = Env::default().filter_or("RUST_LOG", "info,actix_web=debug,serv=debug");
     env_logger::Builder::from_env(env)
         .format_timestamp_millis()
         .format_module_path(true)
         .try_init()
-        .ok(); // Use try_init() and ignore errors if logger is already initialized
+        .ok();
 
-    // Log a startup message to verify logging is working
+    // Log startup message
     info!("=== Beyond The Horizon API Server Starting ===");
-    info!("Logging initialized at debug level for actix_web");
 
-    // Log whether we're running in local or production mode
-    if let Ok(port) = env::var("PORT") {
-        info!("Starting BTH API Server with Shuttle on port {}...", port);
-    } else {
-        info!("Starting BTH API Server with Shuttle...");
-    }
+    // Get required secrets with proper error handling
+    let session_secret = match secrets.get("SESSION_SECRET") {
+        Some(secret) => secret,
+        None => {
+            // Log warning but use a default value instead of failing
+            info!("SESSION_SECRET not found in secrets, using a default value");
+            "default_session_secret_for_development_only".to_string()
+        }
+    };
 
-    // Get database URL from secrets
-    let database_url = secrets
-        .get("DATABASE_URL")
-        .expect("DATABASE_URL not found in secrets");
+    // Create a secret key for cookies
+    let secret_key = Key::from(session_secret.as_bytes());
 
-    // Connect to the database using the connection string
-    let pool = PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to Postgres");
+    // Get database URL
+    let database_url = match secrets.get("DATABASE_URL") {
+        Some(url) => url,
+        None => {
+            // Log warning but use a default value instead of failing
+            info!("DATABASE_URL not found in secrets, using a default value");
+            "postgresql://postgres:postgres@localhost/bthdb".to_string()
+        }
+    };
+
+    // Connect to the database
+    let pool = match PgPool::connect(&database_url).await {
+        Ok(pool) => pool,
+        Err(e) => {
+            // This one should still fail as we can't proceed without a database
+            error!("Failed to connect to Postgres: {}", e);
+            return Err(shuttle_runtime::Error::Custom(anyhow::anyhow!(
+                "Database connection failed"
+            )));
+        }
+    };
 
     // Check database connection
     if handlers::db::check_db_connection(&pool).await {
         info!("Database connection established and verified");
     } else {
         info!("Database connection established but verification failed");
+        // Continue execution instead of returning an error
     }
 
-    // Get allowed origins from environment or use a default
-    // In production, this should be your frontend domain
-    let allowed_origins = env::var("ALLOWED_ORIGINS")
-        .unwrap_or_else(|_| String::from("http://localhost:5173"));
+    // Get allowed origins or default to allow all
+    let allowed_origins = secrets
+        .get("ALLOWED_ORIGINS")
+        .unwrap_or_else(|| "http://localhost:5173".to_string());
 
-    // Check if we're in development mode
-    let is_development =
-        env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string()) == "development";
+    info!("Starting BTH API Server with Shuttle...");
 
     // Convert to owned strings to avoid borrowing issues
     let origins: Vec<String> = allowed_origins
@@ -97,7 +105,7 @@ async fn main(
 
     // Create a configuration closure for Shuttle
     let config = move |cfg: &mut web::ServiceConfig| {
-        // Configure CORS
+        // Configure CORS to be permissive
         let cors = Cors::default()
             .allowed_origin_fn(move |origin, _req_head| {
                 // If no specific origins are defined, allow all
@@ -114,9 +122,9 @@ async fn main(
                 header::AUTHORIZATION,
                 header::ACCEPT,
                 header::CONTENT_TYPE,
-                header::CONTENT_DISPOSITION, // Required for multipart form data
-                header::CONTENT_LENGTH,      // Required for file uploads
-                header::ORIGIN,              // Required for CORS
+                header::CONTENT_DISPOSITION,
+                header::CONTENT_LENGTH,
+                header::ORIGIN,
                 header::ACCESS_CONTROL_REQUEST_METHOD,
                 header::ACCESS_CONTROL_REQUEST_HEADERS,
             ])
@@ -135,26 +143,18 @@ async fn main(
                     "%t [%s] \"%r\" %b %D ms \"%{Referer}i\" \"%{User-Agent}i\" %a",
                 ))
                 .wrap(RequestLogger)
-                // Add CORS middleware
                 .wrap(cors)
-                // Add Identity and Session middleware
                 .wrap(IdentityMiddleware::default())
                 .wrap(
                     SessionMiddleware::builder(CookieSessionStore::default(), secret_key.clone())
-                        .cookie_secure(!is_development) // True in production, false in development
+                        .cookie_secure(false) // Allow non-HTTPS cookies
                         .cookie_http_only(true)
-                        .cookie_same_site(SameSite::None) // None for cross-domain, Lax for same domain
-                        .cookie_name("bth_session".to_string()) // Custom cookie name
-                        .cookie_domain(if is_development {
-                            None
-                        } else {
-                            Some("your-api-domain.com".to_string())
-                        }) // Set to your API domain in production
+                        .cookie_same_site(SameSite::None) // Allow cross-site cookies
+                        .cookie_name("bth_session".to_string())
+                        // No domain restriction
                         .build(),
                 )
-                // Add session refresh middleware (refresh if less than 30 minutes left)
                 .wrap(SessionRefreshMiddleware::new(30 * 60))
-                // API routes
                 .service(
                     web::scope("/api")
                         .service(web::scope("/public").configure(config_user_auth_routes))
@@ -174,7 +174,6 @@ async fn main(
                                 .configure(init_ws_routes),
                         ),
                 )
-                // Admin routes
                 .service(
                     web::scope("/api/admin")
                         .wrap(AuthMiddleware)

@@ -293,14 +293,18 @@ pub async fn refresh_session(req: HttpRequest) -> impl Responder {
 //Config User Auth Routes
 // POST /auth/register
 // POST /auth/login
-// POST /auth/logout
 // POST /auth/refresh
 pub fn config_user_auth_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/auth")
             .route("/register", web::post().to(create_user))
             .route("/login", web::post().to(login))
-            .route("/logout", web::post().to(logout))
             .route("/refresh", web::post().to(refresh_session)),
     );
+}
+
+// New function to configure protected auth routes
+// POST /auth/logout
+pub fn config_protected_auth_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(web::scope("/auth").route("/logout", web::post().to(logout)));
 }

@@ -7,12 +7,11 @@ use actix_cors::Cors;
 use actix_identity::IdentityMiddleware;
 use actix_session::{storage::CookieSessionStore, SessionMiddleware};
 use actix_web::{
-    cookie::{Cookie, Key, SameSite},
+    cookie::{ Key, SameSite},
     middleware::Logger,
     web, HttpResponse,
 };
 use anyhow;
-use chrono;
 use handlers::ws::init_ws_routes;
 use log::{error, info};
 use middleware::{
@@ -20,14 +19,19 @@ use middleware::{
     session_refresh_middleware::SessionRefreshMiddleware,
 };
 use routes::{
-    admin::config_admin_routes, group_chats::config_group_chat_routes, posts::config_feed_routes,
-    private_messaging::config_message_routes, report::config_report_routes,
-    resources::config_resource_routes, sponsor_matching::config_matching_routes,
-    sponsor_role::config_sponsor_routes, support_group_meetings::config_meeting_routes,
-    support_groups::config_support_group_routes, user_auth::config_user_auth_routes,
+    admin::config_admin_routes,
+    group_chats::config_group_chat_routes,
+    posts::config_feed_routes,
+    private_messaging::config_message_routes,
+    report::config_report_routes,
+    resources::config_resource_routes,
+    sponsor_matching::config_matching_routes,
+    sponsor_role::config_sponsor_routes,
+    support_group_meetings::config_meeting_routes,
+    support_groups::config_support_group_routes,
+    user_auth::{config_protected_auth_routes, config_user_auth_routes},
     user_data::config_user_data_routes,
 };
-use serde_json;
 use shuttle_actix_web::ShuttleActixWeb;
 use shuttle_runtime::SecretStore;
 use sqlx::PgPool;
@@ -36,28 +40,7 @@ use sqlx::PgPool;
 async fn main(
     #[shuttle_runtime::Secrets] secrets: SecretStore,
 ) -> ShuttleActixWeb<impl FnOnce(&mut web::ServiceConfig) + Send + Clone + 'static> {
-    // Configure and initialize logger safely
 
-    // Log all available secrets with their values for testing
-    let secret_names = vec![
-        "SESSION_SECRET",
-        "DATABASE_URL",
-        "ALLOWED_ORIGINS",
-        "RUST_LOG",
-        "RUST_BACKTRACE",
-        "B2_APPLICATION_KEY_ID",
-        "B2_APPLICATION_KEY",
-        "B2_BUCKET_ID",
-        "UPLOAD_DIR",
-    ];
-
-    for name in &secret_names {
-        if let Some(value) = secrets.get(name) {
-            info!("Secret: {} = {}", name, value);
-        } else {
-            info!("Secret: {} = <not found>", name);
-        }
-    }
     // Log startup message
     info!("=== Beyond The Horizon API Server Starting ===");
 
@@ -66,8 +49,10 @@ async fn main(
         Some(secret) => secret,
         None => {
             // Log warning but use a default value instead of failing
-            info!("SESSION_SECRET not found in secrets, using a default value");
-            "default_session_secret_for_development_only".to_string()
+            error!("SESSION_SECRET not found in secrets, using a default value");
+            return Err(shuttle_runtime::Error::Custom(anyhow::anyhow!(
+                "Session secret not found"
+            )));
         }
     };
 
@@ -103,7 +88,6 @@ async fn main(
         info!("Database connection established and verified");
     } else {
         info!("Database connection established but verification failed");
-        // Continue execution instead of returning an error
     }
 
     info!("Starting BTH API Server with Shuttle...");
@@ -133,7 +117,7 @@ async fn main(
                     SessionMiddleware::builder(CookieSessionStore::default(), secret_key.clone())
                         .cookie_secure(false) // Must be false for localhost testing
                         .cookie_http_only(true)
-                        .cookie_same_site(SameSite::None) 
+                        .cookie_same_site(SameSite::None)
                         .cookie_name("bth_session".to_string())
                         .cookie_path("/".to_string())
                         .build(),
@@ -145,6 +129,7 @@ async fn main(
                         .service(
                             web::scope("/protected")
                                 .wrap(AuthMiddleware)
+                                .configure(config_protected_auth_routes)
                                 .configure(config_user_data_routes)
                                 .configure(config_feed_routes)
                                 .configure(config_message_routes)
@@ -167,50 +152,6 @@ async fn main(
                     "/",
                     web::get().to(|| async {
                         HttpResponse::Ok().body("Welcome to Beyond The Horizon API")
-                    }),
-                )
-                .service(
-                    web::resource("/api/test-cors").route(web::get().to(|| async {
-                        info!("CORS test endpoint called");
-                        HttpResponse::Ok().json(serde_json::json!({
-                            "message": "CORS is working!",
-                            "timestamp": chrono::Utc::now().to_rfc3339()
-                        }))
-                    })),
-                )
-                .route(
-                    "/api/test-auth",
-                    web::get().to(|| async {
-                        HttpResponse::Ok()
-                            .cookie(
-                                Cookie::build("test_auth", "test_value")
-                                    .path("/")
-                                    .secure(true)
-                                    .http_only(true)
-                                    .same_site(SameSite::None)
-                                    .finish(),
-                            )
-                            .json(serde_json::json!({
-                                "message": "Test auth cookie set",
-                                "timestamp": chrono::Utc::now().to_rfc3339()
-                            }))
-                    }),
-                )
-                .route(
-                    "/api/test-cookie",
-                    web::get().to(|| async {
-                        HttpResponse::Ok()
-                            .cookie(
-                                Cookie::build("test_cookie", "test_value")
-                                    .path("/")
-                                    .http_only(false) // Make it visible to JavaScript
-                                    .same_site(SameSite::Lax)
-                                    .finish(),
-                            )
-                            .json(serde_json::json!({
-                                "message": "Test cookie set",
-                                "timestamp": chrono::Utc::now().to_rfc3339()
-                            }))
                     }),
                 ),
         );

@@ -37,7 +37,7 @@ async fn main(
 ) -> ShuttleActixWeb<impl FnOnce(&mut web::ServiceConfig) + Send + Clone + 'static> {
     // Configure and initialize logger safely
 
-    // Log all available secrets (keys only for security)
+    // Log all available secrets with their values for testing
     let secret_names = vec![
         "SESSION_SECRET", 
         "DATABASE_URL", 
@@ -49,13 +49,14 @@ async fn main(
         "B2_BUCKET_ID", 
         "UPLOAD_DIR"
     ];
-    info!(
-        "Available secrets: {:?}",
-        secret_names
-            .iter()
-            .filter(|&name| secrets.get(name).is_some())
-            .collect::<Vec<_>>()
-    );
+    
+    for name in &secret_names {
+        if let Some(value) = secrets.get(name) {
+            info!("Secret: {} = {}", name, value);
+        } else {
+            info!("Secret: {} = <not found>", name);
+        }
+    }
     // Log startup message
     info!("=== Beyond The Horizon API Server Starting ===");
 
@@ -77,8 +78,9 @@ async fn main(
         Some(url) => url,
         None => {
             // Log warning but use a default value instead of failing
-            info!("DATABASE_URL not found in secrets, using a default value");
-            "postgresql://postgres:postgres@localhost/bthdb".to_string()
+            error!("DATABASE_URL not found in secrets, using a default value");
+             return Err(shuttle_runtime::Error::Custom(anyhow::anyhow!(
+                "Database connection failed")));
         }
     };
 
@@ -127,9 +129,9 @@ async fn main(
 
                 // Check if the origin is in our allowed list
                 let origin_str = origin.to_str().unwrap_or("");
-                origins.iter().any(|allowed| allowed == origin_str)
+                origins.iter().any(|allowed| allowed == origin_str || allowed == "*")
             })
-            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "PATCH"])
+            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
             .allowed_headers(vec![
                 header::AUTHORIZATION,
                 header::ACCEPT,

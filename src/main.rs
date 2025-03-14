@@ -8,11 +8,11 @@ use actix_identity::IdentityMiddleware;
 use actix_session::{storage::CookieSessionStore, SessionMiddleware};
 use actix_web::{
     cookie::{Key, SameSite},
-    http::header,
     middleware::Logger,
     web, HttpResponse,
 };
 use anyhow;
+use chrono;
 use handlers::ws::init_ws_routes;
 use log::{error, info};
 use middleware::{
@@ -27,6 +27,7 @@ use routes::{
     support_groups::config_support_group_routes, user_auth::config_user_auth_routes,
     user_data::config_user_data_routes,
 };
+use serde_json;
 use shuttle_actix_web::ShuttleActixWeb;
 use shuttle_runtime::SecretStore;
 use sqlx::PgPool;
@@ -39,17 +40,17 @@ async fn main(
 
     // Log all available secrets with their values for testing
     let secret_names = vec![
-        "SESSION_SECRET", 
-        "DATABASE_URL", 
-        "ALLOWED_ORIGINS", 
-        "RUST_LOG", 
-        "RUST_BACKTRACE", 
-        "B2_APPLICATION_KEY_ID", 
-        "B2_APPLICATION_KEY", 
-        "B2_BUCKET_ID", 
-        "UPLOAD_DIR"
+        "SESSION_SECRET",
+        "DATABASE_URL",
+        "ALLOWED_ORIGINS",
+        "RUST_LOG",
+        "RUST_BACKTRACE",
+        "B2_APPLICATION_KEY_ID",
+        "B2_APPLICATION_KEY",
+        "B2_BUCKET_ID",
+        "UPLOAD_DIR",
     ];
-    
+
     for name in &secret_names {
         if let Some(value) = secrets.get(name) {
             info!("Secret: {} = {}", name, value);
@@ -79,8 +80,9 @@ async fn main(
         None => {
             // Log warning but use a default value instead of failing
             error!("DATABASE_URL not found in secrets, using a default value");
-             return Err(shuttle_runtime::Error::Custom(anyhow::anyhow!(
-                "Database connection failed")));
+            return Err(shuttle_runtime::Error::Custom(anyhow::anyhow!(
+                "Database connection failed"
+            )));
         }
     };
 
@@ -104,49 +106,17 @@ async fn main(
         // Continue execution instead of returning an error
     }
 
-    // Get allowed origins or default to allow all
-    let allowed_origins = secrets
-        .get("ALLOWED_ORIGINS")
-        .unwrap_or_else(|| "".to_string());
 
     info!("Starting BTH API Server with Shuttle...");
-
-    // Convert to owned strings to avoid borrowing issues
-    let origins: Vec<String> = allowed_origins
-        .split(',')
-        .map(|s| s.trim().to_owned())
-        .collect();
-
+ 
     // Create a configuration closure for Shuttle
     let config = move |cfg: &mut web::ServiceConfig| {
-        // Configure CORS to be permissive
+        // Configure CORS to be extremely permissive for testing
         let cors = Cors::default()
-            .allowed_origin_fn(move |origin, _req_head| {
-                // If no specific origins are defined, allow all
-                if origins.is_empty() {
-                    return true;
-                }
-
-                // Check if the origin is in our allowed list
-                let origin_str = origin.to_str().unwrap_or("");
-                origins.iter().any(|allowed| allowed == origin_str || allowed == "*")
-            })
-            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
-            .allowed_headers(vec![
-                header::AUTHORIZATION,
-                header::ACCEPT,
-                header::CONTENT_TYPE,
-                header::CONTENT_DISPOSITION,
-                header::CONTENT_LENGTH,
-                header::ORIGIN,
-                header::ACCESS_CONTROL_REQUEST_METHOD,
-                header::ACCESS_CONTROL_REQUEST_HEADERS,
-            ])
-            .expose_headers(vec![
-                header::CONTENT_DISPOSITION,
-                header::CONTENT_LENGTH,
-                header::CONTENT_TYPE,
-            ])
+            .allowed_origin_fn(|_origin, _req_head| true)
+            .allow_any_method()
+            .allow_any_header()
+            .expose_any_header()
             .supports_credentials()
             .max_age(3600);
 
@@ -197,6 +167,15 @@ async fn main(
                     web::get().to(|| async {
                         HttpResponse::Ok().body("Welcome to Beyond The Horizon API")
                     }),
+                )
+                .service(
+                    web::resource("/api/test-cors").route(web::get().to(|| async {
+                        info!("CORS test endpoint called");
+                        HttpResponse::Ok().json(serde_json::json!({
+                            "message": "CORS is working!",
+                            "timestamp": chrono::Utc::now().to_rfc3339()
+                        }))
+                    })),
                 ),
         );
     };

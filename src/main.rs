@@ -106,9 +106,8 @@ async fn main(
         // Continue execution instead of returning an error
     }
 
-
     info!("Starting BTH API Server with Shuttle...");
- 
+
     // Create a configuration closure for Shuttle
     let config = move |cfg: &mut web::ServiceConfig| {
         // Configure CORS to be extremely permissive for testing
@@ -131,10 +130,11 @@ async fn main(
                 .wrap(IdentityMiddleware::default())
                 .wrap(
                     SessionMiddleware::builder(CookieSessionStore::default(), secret_key.clone())
-                        .cookie_secure(false) // Allow non-HTTPS cookies
-                        .cookie_http_only(false)
-                        .cookie_same_site(SameSite::None)
+                        .cookie_secure(false) // Set to true in production
+                        .cookie_http_only(true) // Prevent JavaScript access for security
+                        .cookie_same_site(SameSite::Lax) // Change from None to Lax for better compatibility
                         .cookie_name("bth_session".to_string())
+                        .cookie_path("/".to_string()) // Convert &str to String
                         .build(),
                 )
                 .wrap(SessionRefreshMiddleware::new(30 * 60))

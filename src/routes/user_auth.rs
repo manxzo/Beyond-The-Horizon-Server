@@ -159,6 +159,7 @@ pub async fn login(
                     avatar_url: user.avatar_url,
                 };
 
+                // Return success response with cookie
                 HttpResponse::Ok().json(response)
             } else {
                 HttpResponse::Unauthorized().body("Invalid credentials")

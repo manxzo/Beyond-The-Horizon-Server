@@ -5,6 +5,7 @@ use actix_identity::Identity;
 use actix_web::cookie::{Cookie, SameSite};
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::{Duration, NaiveDate, NaiveDateTime, Utc};
+use jsonwebtoken::{encode, EncodingKey, Header};
 use log;
 use serde::{Deserialize, Serialize};
 use serde_json::to_string;
@@ -94,6 +95,7 @@ pub struct LoginResponse {
     pub user_id: Uuid,
     pub username: String,
     pub avatar_url: String,
+    pub token: String,
 }
 
 //Login
@@ -161,19 +163,39 @@ pub async fn login(
 
                 log::info!("Successfully created session for user: {}", user.username);
 
+                let session_secret = req
+                    .app_data::<web::Data<String>>()
+                    .map(|data| data.get_ref().clone())
+                    .unwrap_or_else(|| "default_session_secret".to_string());
+
+                let token = match encode(
+                    &Header::default(),
+                    &claims,
+                    &EncodingKey::from_secret(session_secret.as_bytes()),
+                ) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        log::error!("Failed to encode JWT: {}", e);
+                        return HttpResponse::InternalServerError()
+                            .body("Failed to create authentication token");
+                    }
+                };
+
                 let response = LoginResponse {
                     user_id: user.user_id,
                     username: user.username,
                     avatar_url: user.avatar_url,
+                    token: token,
                 };
 
                 // Set a test cookie to verify cookie handling
                 HttpResponse::Ok()
                     .cookie(
-                        Cookie::build("auth_test", "true")
+                        Cookie::build("bth_session", token)
                             .path("/")
                             .http_only(true)
-                            .same_site(SameSite::Lax)
+                            .same_site(SameSite::None)
+                            .secure(false)
                             .finish(),
                     )
                     .json(response)

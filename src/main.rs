@@ -120,6 +120,7 @@ async fn main(
             .max_age(3600);
 
         cfg.app_data(web::Data::new(pool.clone()));
+        cfg.app_data(web::Data::new(session_secret.clone()));
         cfg.service(
             web::scope("")
                 .wrap(Logger::new(
@@ -130,9 +131,9 @@ async fn main(
                 .wrap(IdentityMiddleware::default())
                 .wrap(
                     SessionMiddleware::builder(CookieSessionStore::default(), secret_key.clone())
-                        .cookie_secure(false) // Set to false for development, true for production
+                        .cookie_secure(false) // Must be false for localhost testing
                         .cookie_http_only(true)
-                        .cookie_same_site(SameSite::Lax) // Use Lax for better browser compatibility
+                        .cookie_same_site(SameSite::None) // Use None for cross-origin
                         .cookie_name("bth_session".to_string())
                         .cookie_path("/".to_string())
                         .build(),

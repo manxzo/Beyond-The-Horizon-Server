@@ -2,7 +2,7 @@ use crate::handlers::auth::Claims;
 use actix_identity::Identity;
 use actix_web::{
     dev::{Service, ServiceRequest, ServiceResponse, Transform},
-    Error, HttpMessage,
+    Error, HttpMessage,web,
 };
 use futures_util::future::{ok, Ready};
 use log::{error, info};
@@ -57,15 +57,18 @@ where
         let service = self.service.clone();
 
         Box::pin(async move {
-            // Get identity from the request
-            let authenticated = if let Some(id) = req.extensions().get::<Identity>() {
+            // First try to authenticate with the session cookie
+            let cookie_auth = if let Some(id) = req.extensions().get::<Identity>() {
                 match id.id() {
                     Ok(claims_str) => {
                         info!("Found identity with claims: {}", claims_str);
 
                         match from_str::<Claims>(&claims_str) {
                             Ok(claims) => {
-                                info!("Successfully authenticated user: {}", claims.username);
+                                info!(
+                                    "Successfully authenticated user via cookie: {}",
+                                    claims.username
+                                );
                                 req.extensions_mut().insert(claims);
                                 true
                             }
@@ -81,15 +84,54 @@ where
                     }
                 }
             } else {
-                error!("No identity found in request");
                 false
             };
 
-            if authenticated {
-                service.call(req).await
-            } else {
-                Err(actix_web::error::ErrorUnauthorized("Authentication failed"))
+            // If cookie auth failed, try JWT token auth
+            if !cookie_auth {
+                // Check for Authorization header
+                if let Some(auth_header) = req.headers().get("Authorization") {
+                    if let Ok(auth_str) = auth_header.to_str() {
+                        if auth_str.starts_with("Bearer ") {
+                            let token = auth_str.trim_start_matches("Bearer ").trim();
+
+                            // Get the session secret
+                            let session_secret = req
+                                .app_data::<web::Data<String>>()
+                                .map(|data| data.get_ref().clone())
+                                .unwrap_or_else(|| "default_session_secret".to_string());
+
+                            // Verify and decode the token
+                            match jsonwebtoken::decode::<Claims>(
+                                token,
+                                &jsonwebtoken::DecodingKey::from_secret(session_secret.as_bytes()),
+                                &jsonwebtoken::Validation::default(),
+                            ) {
+                                Ok(token_data) => {
+                                    info!(
+                                        "Successfully authenticated user via JWT: {}",
+                                        token_data.claims.username
+                                    );
+                                    req.extensions_mut().insert(token_data.claims);
+                                    return service.call(req).await;
+                                }
+                                Err(e) => {
+                                    error!("JWT validation failed: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // If we get here, both auth methods failed
+                if !cookie_auth {
+                    error!("No valid authentication found");
+                    return Err(actix_web::error::ErrorUnauthorized("Authentication failed"));
+                }
             }
+
+            // If we get here, cookie auth succeeded
+            service.call(req).await
         })
     }
 }

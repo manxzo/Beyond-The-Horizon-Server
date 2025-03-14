@@ -133,7 +133,7 @@ async fn main(
                     SessionMiddleware::builder(CookieSessionStore::default(), secret_key.clone())
                         .cookie_secure(false) // Must be false for localhost testing
                         .cookie_http_only(true)
-                        .cookie_same_site(SameSite::None) // Use None for cross-origin
+                        .cookie_same_site(SameSite::None) 
                         .cookie_name("bth_session".to_string())
                         .cookie_path("/".to_string())
                         .build(),

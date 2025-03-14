@@ -2,7 +2,7 @@ use crate::handlers::auth::Claims;
 use crate::handlers::b2_storage::B2Client;
 use crate::models::all_models::UserRole;
 use actix_multipart::Multipart;
-use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::{NaiveDate, NaiveDateTime};
 use futures::{StreamExt, TryStreamExt};
 use log::{error, info};
@@ -117,7 +117,7 @@ pub async fn get_user_by_name(pool: web::Data<PgPool>, path: web::Path<String>) 
                     Err(e) => {
                         eprintln!("Error fetching private user data: {:?}", e);
                         HttpResponse::InternalServerError().body("Failed to retrieve user data")
-                    },
+                    }
                 };
             }
 
@@ -134,13 +134,13 @@ pub async fn get_user_by_name(pool: web::Data<PgPool>, path: web::Path<String>) 
                 Err(e) => {
                     eprintln!("Error fetching public user data: {:?}", e);
                     HttpResponse::InternalServerError().body("Failed to retrieve user data")
-                },
+                }
             }
         }
         Err(e) => {
             eprintln!("Error checking user privacy: {:?}", e);
             HttpResponse::NotFound().body("User not found")
-        },
+        }
     }
 }
 
@@ -461,6 +461,21 @@ pub async fn reset_avatar(pool: web::Data<PgPool>, req: HttpRequest) -> impl Res
     }
 }
 
+// Get current user info
+pub async fn get_current_user(req: HttpRequest) -> impl Responder {
+    // Get the claims from the request extensions (set by AuthMiddleware)
+    if let Some(claims) = req.extensions().get::<Claims>() {
+        // Return the user info from the claims
+        HttpResponse::Ok().json(serde_json::json!({
+            "user_id": claims.id,
+            "username": claims.username,
+            "role": claims.role
+        }))
+    } else {
+        HttpResponse::Unauthorized().body("Not authenticated")
+    }
+}
+
 // Config User Data Routes
 // GET /users/info
 // GET /users/{username}
@@ -474,6 +489,7 @@ pub fn config_user_data_routes(cfg: &mut web::ServiceConfig) {
             .route("/update-info", web::patch().to(update_user_profile))
             .route("/delete-user", web::delete().to(delete_user_account))
             .route("/avatar/upload", web::post().to(upload_avatar))
-            .route("/avatar/reset", web::post().to(reset_avatar)),
+            .route("/avatar/reset", web::post().to(reset_avatar))
+            .route("/current-user", web::get().to(get_current_user)),
     );
 }

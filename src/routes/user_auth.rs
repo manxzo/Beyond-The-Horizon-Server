@@ -243,7 +243,29 @@ pub async fn refresh_session(req: HttpRequest) -> impl Responder {
                                 .body("Failed to refresh session");
                         }
 
-                        return HttpResponse::Ok().json("Session refreshed successfully");
+                        // Generate a new JWT token
+                        let session_secret = req
+                            .app_data::<web::Data<String>>()
+                            .map(|data| data.get_ref().clone())
+                            .unwrap_or_else(|| "default_session_secret".to_string());
+
+                        let token = match encode(
+                            &Header::default(),
+                            &claims,
+                            &EncodingKey::from_secret(session_secret.as_bytes()),
+                        ) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                log::error!("Failed to encode JWT: {}", e);
+                                return HttpResponse::InternalServerError()
+                                    .body("Failed to create authentication token");
+                            }
+                        };
+
+                        return HttpResponse::Ok().json(serde_json::json!({
+                            "message": "Session refreshed successfully",
+                            "token": token
+                        }));
                     }
                     Err(_) => return HttpResponse::BadRequest().body("Invalid session data"),
                 }

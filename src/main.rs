@@ -107,7 +107,7 @@ async fn main(
     // Get allowed origins or default to allow all
     let allowed_origins = secrets
         .get("ALLOWED_ORIGINS")
-        .unwrap();
+        .unwrap_or_else(|| "".to_string());
 
     info!("Starting BTH API Server with Shuttle...");
 

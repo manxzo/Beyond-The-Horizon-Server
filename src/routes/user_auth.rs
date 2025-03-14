@@ -185,7 +185,7 @@ pub async fn login(
                     user_id: user.user_id,
                     username: user.username,
                     avatar_url: user.avatar_url,
-                    token: token,
+                    token: token.clone(),
                 };
 
                 // Set a test cookie to verify cookie handling

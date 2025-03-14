@@ -211,22 +211,26 @@ pub async fn login(
 }
 
 // Logout endpoint
-pub async fn logout(identity: Identity) -> impl Responder {
-    // Clear the session identity
-    identity.logout();
+pub async fn logout(req: HttpRequest) -> impl Responder {
+    if let Some(identity) = req.extensions().get::<Identity>() {
+        // Clear the session identity
+        identity.logout();
 
-    // Clear the JWT token cookie by setting an expired cookie with the same name
-    HttpResponse::Ok()
-        .cookie(
-            Cookie::build("bth_session", "")
-                .path("/")
-                .http_only(true)
-                .same_site(SameSite::None)
-                .secure(false)
-                .max_age(actix_web::cookie::time::Duration::new(-1, 0)) // Expired cookie
-                .finish(),
-        )
-        .json("Logged out successfully")
+        // Clear the JWT token cookie by setting an expired cookie with the same name
+        HttpResponse::Ok()
+            .cookie(
+                Cookie::build("bth_session", "")
+                    .path("/")
+                    .http_only(true)
+                    .same_site(SameSite::None)
+                    .secure(false)
+                    .max_age(actix_web::cookie::time::Duration::new(-1, 0)) // Expired cookie
+                    .finish(),
+            )
+            .json("Logged out successfully")
+    } else {
+        HttpResponse::Unauthorized().body("Not authenticated")
+    }
 }
 
 // Refresh session endpoint

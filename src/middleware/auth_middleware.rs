@@ -5,6 +5,7 @@ use actix_web::{
     Error, HttpMessage,
 };
 use futures_util::future::{ok, Ready};
+use log::{error, info};
 use serde_json::from_str;
 use std::{
     future::Future,
@@ -52,37 +53,36 @@ where
         self.service.poll_ready(ctx)
     }
 
-    fn call(&self, req: ServiceRequest) -> Self::Future {
+    fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let service = self.service.clone();
 
         Box::pin(async move {
             // Get identity from the request
             let authenticated = if let Some(id) = req.extensions().get::<Identity>() {
-                // Get user claims from identity
                 match id.id() {
                     Ok(claims_str) => {
-                        // Deserialize the claims
+                        info!("Found identity with claims: {}", claims_str);
+
                         match from_str::<Claims>(&claims_str) {
                             Ok(claims) => {
-                                // Store claims in request extensions
+                                info!("Successfully authenticated user: {}", claims.username);
                                 req.extensions_mut().insert(claims);
                                 true
                             }
-                            Err(_) => {
-                                return Err(actix_web::error::ErrorUnauthorized(
-                                    "Invalid session data",
-                                ));
+                            Err(e) => {
+                                error!("Failed to deserialize claims: {}", e);
+                                false
                             }
                         }
                     }
-                    Err(_) => {
-                        return Err(actix_web::error::ErrorUnauthorized(
-                            "Session expired or invalid",
-                        ));
+                    Err(e) => {
+                        error!("Failed to get identity ID: {}", e);
+                        false
                     }
                 }
             } else {
-                return Err(actix_web::error::ErrorUnauthorized("Not authenticated"));
+                error!("No identity found in request");
+                false
             };
 
             if authenticated {

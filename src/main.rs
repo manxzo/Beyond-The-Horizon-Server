@@ -7,7 +7,7 @@ use actix_cors::Cors;
 use actix_identity::IdentityMiddleware;
 use actix_session::{storage::CookieSessionStore, SessionMiddleware};
 use actix_web::{
-    cookie::{Key, SameSite},
+    cookie::{Cookie, Key, SameSite},
     middleware::Logger,
     web, HttpResponse,
 };
@@ -130,11 +130,11 @@ async fn main(
                 .wrap(IdentityMiddleware::default())
                 .wrap(
                     SessionMiddleware::builder(CookieSessionStore::default(), secret_key.clone())
-                        .cookie_secure(false) // Set to true in production
-                        .cookie_http_only(true) // Prevent JavaScript access for security
-                        .cookie_same_site(SameSite::Lax) // Change from None to Lax for better compatibility
+                        .cookie_secure(false) // Set to false for development, true for production
+                        .cookie_http_only(true)
+                        .cookie_same_site(SameSite::Lax) // Use Lax for better browser compatibility
                         .cookie_name("bth_session".to_string())
-                        .cookie_path("/".to_string()) // Convert &str to String
+                        .cookie_path("/".to_string())
                         .build(),
                 )
                 .wrap(SessionRefreshMiddleware::new(30 * 60))
@@ -176,6 +176,41 @@ async fn main(
                             "timestamp": chrono::Utc::now().to_rfc3339()
                         }))
                     })),
+                )
+                .route(
+                    "/api/test-auth",
+                    web::get().to(|| async {
+                        HttpResponse::Ok()
+                            .cookie(
+                                Cookie::build("test_auth", "test_value")
+                                    .path("/")
+                                    .secure(true)
+                                    .http_only(true)
+                                    .same_site(SameSite::None)
+                                    .finish(),
+                            )
+                            .json(serde_json::json!({
+                                "message": "Test auth cookie set",
+                                "timestamp": chrono::Utc::now().to_rfc3339()
+                            }))
+                    }),
+                )
+                .route(
+                    "/api/test-cookie",
+                    web::get().to(|| async {
+                        HttpResponse::Ok()
+                            .cookie(
+                                Cookie::build("test_cookie", "test_value")
+                                    .path("/")
+                                    .http_only(false) // Make it visible to JavaScript
+                                    .same_site(SameSite::Lax)
+                                    .finish(),
+                            )
+                            .json(serde_json::json!({
+                                "message": "Test cookie set",
+                                "timestamp": chrono::Utc::now().to_rfc3339()
+                            }))
+                    }),
                 ),
         );
     };

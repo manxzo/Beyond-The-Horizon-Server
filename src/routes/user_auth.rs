@@ -2,9 +2,13 @@ use crate::handlers::auth::Claims;
 use crate::handlers::password::{hash_password, verify_password};
 use crate::models::all_models::UserRole;
 use actix_identity::Identity;
+use actix_web::cookie::{Cookie, SameSite};
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::{Duration, NaiveDate, NaiveDateTime, Utc};
+use jsonwebtoken;
+use log;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use serde_json::to_string;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -139,19 +143,25 @@ pub async fn login(
                     exp: expiration.timestamp() as usize,
                 };
 
+                log::info!("Setting identity with claims: {:?}", claims);
+
                 // Serialize claims to JSON string
                 let claims_str = match to_string(&claims) {
                     Ok(s) => s,
-                    Err(_) => {
+                    Err(e) => {
+                        log::error!("Failed to serialize claims: {}", e);
                         return HttpResponse::InternalServerError()
-                            .body("Failed to serialize session data")
+                            .body("Failed to serialize session data");
                     }
                 };
 
                 // Create identity session
-                if let Err(_) = Identity::login(&req.extensions(), claims_str) {
+                if let Err(e) = Identity::login(&req.extensions(), claims_str) {
+                    log::error!("Failed to create identity session: {}", e);
                     return HttpResponse::InternalServerError().body("Failed to create session");
                 }
+
+                log::info!("Successfully created session for user: {}", user.username);
 
                 let response = LoginResponse {
                     user_id: user.user_id,
@@ -159,8 +169,16 @@ pub async fn login(
                     avatar_url: user.avatar_url,
                 };
 
-                // Return success response with cookie
-                HttpResponse::Ok().json(response)
+                // Set a test cookie to verify cookie handling
+                HttpResponse::Ok()
+                    .cookie(
+                        Cookie::build("auth_test", "true")
+                            .path("/")
+                            .http_only(true)
+                            .same_site(SameSite::Lax)
+                            .finish(),
+                    )
+                    .json(response)
             } else {
                 HttpResponse::Unauthorized().body("Invalid credentials")
             }

@@ -13,7 +13,6 @@ use actix_web::{
     web, HttpResponse,
 };
 use anyhow;
-use env_logger::Env;
 use handlers::ws::init_ws_routes;
 use log::{error, info};
 use middleware::{
@@ -37,13 +36,26 @@ async fn main(
     #[shuttle_runtime::Secrets] secrets: SecretStore,
 ) -> ShuttleActixWeb<impl FnOnce(&mut web::ServiceConfig) + Send + Clone + 'static> {
     // Configure and initialize logger safely
-    let env = Env::default().filter_or("RUST_LOG", "info,actix_web=debug,serv=debug");
-    env_logger::Builder::from_env(env)
-        .format_timestamp_millis()
-        .format_module_path(true)
-        .try_init()
-        .ok();
 
+    // Log all available secrets (keys only for security)
+    let secret_names = vec![
+        "SESSION_SECRET", 
+        "DATABASE_URL", 
+        "ALLOWED_ORIGINS", 
+        "RUST_LOG", 
+        "RUST_BACKTRACE", 
+        "B2_APPLICATION_KEY_ID", 
+        "B2_APPLICATION_KEY", 
+        "B2_BUCKET_ID", 
+        "UPLOAD_DIR"
+    ];
+    info!(
+        "Available secrets: {:?}",
+        secret_names
+            .iter()
+            .filter(|&name| secrets.get(name).is_some())
+            .collect::<Vec<_>>()
+    );
     // Log startup message
     info!("=== Beyond The Horizon API Server Starting ===");
 
@@ -93,7 +105,7 @@ async fn main(
     // Get allowed origins or default to allow all
     let allowed_origins = secrets
         .get("ALLOWED_ORIGINS")
-        .unwrap_or_else(|| "http://localhost:5173".to_string());
+        .unwrap();
 
     info!("Starting BTH API Server with Shuttle...");
 
@@ -148,10 +160,9 @@ async fn main(
                 .wrap(
                     SessionMiddleware::builder(CookieSessionStore::default(), secret_key.clone())
                         .cookie_secure(false) // Allow non-HTTPS cookies
-                        .cookie_http_only(true)
-                        .cookie_same_site(SameSite::None) // Allow cross-site cookies
+                        .cookie_http_only(false)
+                        .cookie_same_site(SameSite::None)
                         .cookie_name("bth_session".to_string())
-                        // No domain restriction
                         .build(),
                 )
                 .wrap(SessionRefreshMiddleware::new(30 * 60))

@@ -1,7 +1,7 @@
 use crate::handlers::auth::Claims;
 use crate::handlers::ws::send_to_role;
 use crate::models::all_models::{ApplicationStatus, UserRole};
-use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -85,7 +85,7 @@ pub async fn submit_sponsor_application(
 
                         // Send notification to admin users via websocket
                         let admin_role = UserRole::Admin;
-                        send_to_role(&admin_role, notification).await;
+                        let _ = send_to_role(&admin_role, notification).await;
 
                         HttpResponse::Ok().json(application)
                     }
@@ -184,7 +184,7 @@ pub async fn update_sponsor_application(
 
                         // Send notification to admin users via websocket
                         let admin_role = UserRole::Admin;
-                        send_to_role(&admin_role, notification).await;
+                        let _ = send_to_role(&admin_role, notification).await;
 
                         HttpResponse::Ok().json(application)
                     }

@@ -1,7 +1,7 @@
 use crate::handlers::auth::Claims;
 use crate::handlers::ws;
 use crate::models::all_models::{Resource, UserRole};
-use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
@@ -95,7 +95,7 @@ pub async fn create_resource(
                 });
 
                 // Notify admins about the new resource
-                ws::send_to_role(&UserRole::Admin, notification).await;
+                let _ = ws::send_to_role(&UserRole::Admin, notification).await;
 
                 // If resource is associated with a support group, notify members
                 if let Some(group_id) = resource.support_group_id {
@@ -117,7 +117,7 @@ pub async fn create_resource(
                             "support_group_id": group_id
                         });
 
-                        ws::send_to_users(&members, group_notification).await;
+                        let _ = ws::send_to_users(&members, group_notification).await;
                     }
                 }
 
@@ -290,4 +290,3 @@ pub fn config_resource_routes(cfg: &mut web::ServiceConfig) {
             .route("/{id}", web::delete().to(delete_resource)),
     );
 }
-

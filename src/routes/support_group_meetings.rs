@@ -1,7 +1,7 @@
 use crate::handlers::auth::Claims;
 use crate::handlers::ws;
 use crate::models::all_models::{GroupChat, GroupMeeting, MeetingParticipant};
-use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -52,7 +52,7 @@ pub async fn create_support_group_meeting(
             VALUES ($1, $2, $3, $4, $5, $6, $7, 'upcoming')
             RETURNING meeting_id, group_chat_id, support_group_id, host_id, title, description, scheduled_time, status
         ";
-        
+
         let meeting_id = Uuid::new_v4();
         let meeting = sqlx::query_as::<_, GroupMeeting>(query)
             .bind(meeting_id)
@@ -64,7 +64,7 @@ pub async fn create_support_group_meeting(
             .bind(payload.support_group_id)
             .fetch_one(pool.get_ref())
             .await;
-            
+
         match meeting {
             Ok(m) => {
                 // Use a transaction to ensure data consistency
@@ -123,7 +123,7 @@ pub async fn create_support_group_meeting(
                     "meeting": m,
                 });
                 for member_id in member_ids {
-                    ws::send_to_user(&member_id, ws_payload.clone()).await;
+                    let _ = ws::send_to_user(&member_id, ws_payload.clone()).await;
                 }
 
                 HttpResponse::Ok().json(m)
@@ -258,7 +258,7 @@ pub async fn join_meeting(
                 "meeting_id": payload.meeting_id,
                 "user_id": user_id,
             });
-            ws::send_to_user(&host_id, ws_payload).await;
+            let _ = ws::send_to_user(&host_id, ws_payload).await;
         }
 
         HttpResponse::Ok().json(participant)
@@ -357,7 +357,7 @@ pub async fn leave_meeting(
                 "meeting_id": meeting_id,
                 "user_id": user_id,
             });
-            ws::send_to_user(&host_id, ws_payload).await;
+            let _ = ws::send_to_user(&host_id, ws_payload).await;
         }
 
         HttpResponse::Ok().body("Successfully left the meeting")
@@ -526,12 +526,10 @@ pub async fn start_meeting(
             "meeting_chat_id": new_chat.group_chat_id
         });
 
-        for participant_id in participant_ids {
-            ws::send_to_user(&participant_id, ws_payload.clone()).await;
-        }
+        let _ = ws::send_to_users(&participant_ids, ws_payload.clone()).await;
 
         // Also notify the host
-        ws::send_to_user(&user_id, ws_payload.clone()).await;
+        let _ = ws::send_to_user(&user_id, ws_payload.clone()).await;
 
         HttpResponse::Ok().json(json!({
             "meeting": updated_meeting,
@@ -642,12 +640,10 @@ pub async fn end_meeting(
             "meeting": updated_meeting
         });
 
-        for participant_id in participant_ids {
-            ws::send_to_user(&participant_id, ws_payload.clone()).await;
-        }
+        let _ = ws::send_to_users(&participant_ids, ws_payload.clone()).await;
 
         // Also notify the host
-        ws::send_to_user(&user_id, ws_payload.clone()).await;
+        let _ = ws::send_to_user(&user_id, ws_payload.clone()).await;
 
         HttpResponse::Ok().json(updated_meeting)
     } else {

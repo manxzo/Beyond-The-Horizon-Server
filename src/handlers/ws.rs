@@ -19,7 +19,6 @@ struct WebSocketSession {
     user_id: Option<Uuid>,
     role: Option<UserRole>,
     tx: Option<UnboundedSender<ws::Message>>,
-    session_secret: String,
     authenticated: bool,
 }
 
@@ -191,7 +190,6 @@ pub async fn ws_connect(req: HttpRequest, stream: web::Payload) -> Result<HttpRe
             user_id: Some(user_id),
             role: Some(role),
             tx: None,
-            session_secret,
             authenticated: true,
         };
 
@@ -227,7 +225,6 @@ pub async fn ws_connect(req: HttpRequest, stream: web::Payload) -> Result<HttpRe
                                 user_id: Some(user_id),
                                 role: Some(role),
                                 tx: None,
-                                session_secret,
                                 authenticated: true,
                             };
 
@@ -252,7 +249,6 @@ pub async fn ws_connect(req: HttpRequest, stream: web::Payload) -> Result<HttpRe
         user_id: None,
         role: None,
         tx: None,
-        session_secret,
         authenticated: false,
     };
 

@@ -58,7 +58,7 @@ pub async fn send_message(
                     "type": "new_message",
                     "message": message,
                 });
-                ws::send_to_user(&receiver_id, ws_payload).await;
+                let _ = ws::send_to_user(&receiver_id, ws_payload).await;
                 HttpResponse::Ok().json(message)
             }
             Err(e) => {
@@ -190,7 +190,7 @@ pub async fn mark_message_seen(
                     "type": "seen_message",
                     "message": message,
                 });
-                ws::send_to_user(&message.sender_id, ws_payload).await;
+                let _ = ws::send_to_user(&message.sender_id, ws_payload).await;
                 HttpResponse::Ok().json(message)
             }
             Err(e) => {
@@ -240,7 +240,7 @@ pub async fn edit_message(
                     "type": "edited_message",
                     "message": message,
                 });
-                ws::send_to_user(&message.receiver_id, ws_payload).await;
+                let _ = ws::send_to_user(&message.receiver_id, ws_payload).await;
                 HttpResponse::Ok().json(message)
             }
             Err(e) => {
@@ -282,7 +282,7 @@ pub async fn delete_message(
                     "type": "deleted_message",
                     "message": message,
                 });
-                ws::send_to_user(&message.receiver_id, ws_payload).await;
+                let _ = ws::send_to_user(&message.receiver_id, ws_payload).await;
                 HttpResponse::Ok().json(message)
             }
             Err(e) => {
@@ -350,7 +350,7 @@ pub async fn report_message(
                     "type": "new_report",
                     "report": report,
                 });
-                ws::send_to_role(&UserRole::Admin, ws_payload).await;
+                let _ = ws::send_to_role(&UserRole::Admin, ws_payload).await;
                 HttpResponse::Ok().json(report)
             }
             Err(e) => {

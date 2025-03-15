@@ -44,7 +44,7 @@ pub async fn suggest_support_group(
                     "type": "new_support_group_suggestion",
                     "support_group": sg,
                 });
-                ws::send_to_role(&UserRole::Admin, ws_payload).await;
+                let _ = ws::send_to_role(&UserRole::Admin, ws_payload).await;
                 HttpResponse::Ok().json(sg)
             }
             Err(e) => {
@@ -152,7 +152,7 @@ pub async fn join_support_group(
                         "user_id": user_id
                     });
 
-                    ws::send_to_users(&members, ws_payload).await;
+                    let _ = ws::send_to_users(&members, ws_payload).await;
                 }
 
                 HttpResponse::Ok().json(m)
@@ -210,7 +210,7 @@ pub async fn leave_support_group(
                         "user_id": user_id,
                     });
 
-                    ws::send_to_users(&members, ws_payload).await;
+                    let _ = ws::send_to_users(&members, ws_payload).await;
                 }
 
                 HttpResponse::Ok().body("Successfully left the support group")

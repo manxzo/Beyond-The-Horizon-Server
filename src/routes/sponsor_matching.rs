@@ -2,7 +2,7 @@ use crate::handlers::auth::Claims;
 use crate::handlers::matching_algo::calculate_match_score;
 use crate::handlers::ws::send_to_user;
 use crate::models::all_models::{MatchUser, MatchingRequest, MatchingStatus};
-use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -156,7 +156,7 @@ pub async fn request_sponsor(
                             "message": format!("You have a new sponsorship request from user {}", claims.username)
                         });
 
-                        send_to_user(&payload.sponsor_id, message).await;
+                        let _ = send_to_user(&payload.sponsor_id, message).await;
 
                         HttpResponse::Ok().json(request)
                     }
@@ -301,12 +301,12 @@ pub async fn respond_to_matching_request(
                     } else {
                         "declined"
                     };
-                    let message = serde_json::json!({
+                    let notification = serde_json::json!({
                         "type": "sponsor_response",
                         "message": format!("Your sponsorship request has been {} by {}", status_text, claims.username)
                     });
 
-                    send_to_user(&member_id, message).await;
+                    let _ = send_to_user(&member_id, notification).await;
 
                     HttpResponse::Ok().json(updated_request)
                 }

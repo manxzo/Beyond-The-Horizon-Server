@@ -63,7 +63,7 @@ pub async fn create_post(
                     .fetch_all(pool.get_ref())
                     .await
                 {
-                    ws::send_to_users(&followers, ws_payload).await;
+                    let _ = ws::send_to_users(&followers, ws_payload).await;
                 }
 
                 HttpResponse::Ok().json(post)
@@ -406,7 +406,7 @@ pub async fn update_post(
                     .fetch_all(pool.get_ref())
                     .await
                 {
-                    ws::send_to_users(&users, ws_payload).await;
+                    let _ = ws::send_to_users(&users, ws_payload).await;
                 }
 
                 HttpResponse::Ok().json(post)
@@ -478,7 +478,7 @@ pub async fn delete_post(
                     });
 
                     if !interested_users.is_empty() {
-                        ws::send_to_users(&interested_users, ws_payload).await;
+                        let _ = ws::send_to_users(&interested_users, ws_payload).await;
                     }
 
                     HttpResponse::Ok().body("Post deleted successfully")
@@ -563,7 +563,7 @@ pub async fn toggle_post_like(
                                     "username": username
                                 });
 
-                                ws::send_to_user(&author_id, ws_payload).await;
+                                let _ = ws::send_to_user(&author_id, ws_payload).await;
                             }
                         }
 
@@ -617,7 +617,7 @@ pub async fn toggle_post_like(
                                 "username": username
                             });
 
-                            ws::send_to_user(&author_id, ws_payload).await;
+                            let _ = ws::send_to_user(&author_id, ws_payload).await;
                         }
                     }
 
@@ -718,7 +718,7 @@ pub async fn create_comment(
                     });
 
                     for user_id in users_to_notify {
-                        ws::send_to_user(&user_id, ws_payload.clone()).await;
+                        let _ = ws::send_to_user(&user_id, ws_payload.clone()).await;
                     }
                 }
 
@@ -788,7 +788,7 @@ pub async fn update_comment(
                                 "username": username
                             });
 
-                            ws::send_to_user(&post_author_id, ws_payload).await;
+                            let _ = ws::send_to_user(&post_author_id, ws_payload).await;
                         }
                     }
                 }
@@ -872,7 +872,7 @@ pub async fn delete_comment(
                                         "username": username
                                     });
 
-                                    ws::send_to_user(&post_author_id, ws_payload).await;
+                                    let _ = ws::send_to_user(&post_author_id, ws_payload).await;
                                 }
                             }
                         }

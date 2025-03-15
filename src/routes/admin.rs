@@ -1,7 +1,7 @@
 use crate::handlers::auth::Claims;
 use crate::handlers::ws;
 use crate::models::all_models::{ApplicationStatus, ReportedType, UserRole};
-use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::{NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -247,7 +247,7 @@ pub async fn review_sponsor_application(
     });
 
     // Send WebSocket notification to the user
-    ws::send_to_user(&user_id, notification.clone()).await;
+    let _ = ws::send_to_user(&user_id, notification.clone()).await;
 
     // Return success response
     HttpResponse::Ok().json(AdminActionResponse {
@@ -508,7 +508,7 @@ pub async fn review_support_group(
     });
 
     // Send WebSocket notification to the user
-    ws::send_to_user(&group_admin_id, notification.clone()).await;
+    let _ = ws::send_to_user(&group_admin_id, notification.clone()).await;
 
     // Return success response
     HttpResponse::Ok().json(AdminActionResponse {
@@ -689,7 +689,7 @@ pub async fn review_resource(
     });
 
     // Send WebSocket notification to the user
-    ws::send_to_user(&contributor_id, notification.clone()).await;
+    let _ = ws::send_to_user(&contributor_id, notification.clone()).await;
 
     // Return success response
     let status_text = if payload.approved {
@@ -876,7 +876,7 @@ pub async fn handle_report(
     });
 
     // Send WebSocket notification to the reporter
-    ws::send_to_user(&report.0, notification_to_reporter).await;
+    let _ = ws::send_to_user(&report.0, notification_to_reporter).await;
 
     // Return success response
     HttpResponse::Ok().json(AdminActionResponse {
@@ -1024,7 +1024,7 @@ pub async fn ban_user(
     });
 
     // Send WebSocket notification to the user
-    ws::send_to_user(&payload.user_id, notification).await;
+    let _ = ws::send_to_user(&payload.user_id, notification).await;
 
     // Return success response
     let ban_message = if let Some(until) = banned_until {
@@ -1156,7 +1156,7 @@ pub async fn unban_user(
     });
 
     // Send WebSocket notification to the user
-    ws::send_to_user(&payload.user_id, notification).await;
+    let _ = ws::send_to_user(&payload.user_id, notification).await;
 
     // Return success response
     HttpResponse::Ok().json(AdminActionResponse {

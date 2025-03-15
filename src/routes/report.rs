@@ -1,7 +1,7 @@
 use crate::handlers::auth::Claims;
 use crate::handlers::ws;
 use crate::models::all_models::{ReportedType, UserRole};
-use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
@@ -143,7 +143,7 @@ pub async fn create_report(
                 });
 
                 // Notify admins about the new report
-                ws::send_to_role(&UserRole::Admin, notification).await;
+                let _ = ws::send_to_role(&UserRole::Admin, notification).await;
 
                 HttpResponse::Created().json(report_id)
             }

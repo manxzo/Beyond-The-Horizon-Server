@@ -263,7 +263,7 @@ pub async fn send_group_chat_message(
                 });
 
                 for member_id in members {
-                    ws::send_to_user(&member_id, ws_payload.clone()).await;
+                    let _ = ws::send_to_user(&member_id, ws_payload.clone()).await;
                 }
             }
 
@@ -319,7 +319,7 @@ pub async fn edit_group_chat_message(
                 });
 
                 for member_id in members {
-                    ws::send_to_user(&member_id, ws_payload.clone()).await;
+                    let _ = ws::send_to_user(&member_id, ws_payload.clone()).await;
                 }
             }
 
@@ -373,7 +373,7 @@ pub async fn delete_group_chat_message(
                 });
 
                 for member_id in members {
-                    ws::send_to_user(&member_id, ws_payload.clone()).await;
+                    let _ = ws::send_to_user(&member_id, ws_payload.clone()).await;
                 }
             }
 
@@ -465,7 +465,7 @@ pub async fn add_group_chat_member(
                 });
 
                 for member_id in members {
-                    ws::send_to_user(&member_id, ws_payload.clone()).await;
+                    let _ = ws::send_to_user(&member_id, ws_payload.clone()).await;
                 }
             }
 
@@ -474,7 +474,7 @@ pub async fn add_group_chat_member(
                 "type": "added_to_group_chat",
                 "group_chat_id": group_chat_id,
             });
-            ws::send_to_user(&payload.member_id, ws_payload).await;
+            let _ = ws::send_to_user(&payload.member_id, ws_payload).await;
 
             HttpResponse::Ok().json(member)
         }
@@ -547,7 +547,7 @@ pub async fn remove_group_chat_member(
                 });
 
                 for member_id in members {
-                    ws::send_to_user(&member_id, ws_payload.clone()).await;
+                    let _ = ws::send_to_user(&member_id, ws_payload.clone()).await;
                 }
             }
 
@@ -556,7 +556,7 @@ pub async fn remove_group_chat_member(
                 "type": "removed_from_group_chat",
                 "group_chat_id": group_chat_id,
             });
-            ws::send_to_user(&member_id, ws_payload).await;
+            let _ = ws::send_to_user(&member_id, ws_payload).await;
 
             HttpResponse::Ok().body("Member removed from group chat")
         }

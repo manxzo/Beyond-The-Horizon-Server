@@ -3,8 +3,8 @@ use log::{debug, error, info};
 use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use std::env;
 use std::error::Error;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 // Backblaze B2 API response structures
@@ -74,44 +74,67 @@ pub struct FileInfo {
 }
 
 // B2 client with caching for auth tokens
+#[derive(Clone)]
 pub struct B2Client {
     client: Client,
-    auth_data: Option<AuthorizeAccountResponse>,
-    auth_time: Option<Instant>,
+    auth_data: Arc<Mutex<Option<AuthorizeAccountResponse>>>,
+    auth_time: Arc<Mutex<Option<Instant>>>,
     application_key_id: String,
     application_key: String,
     bucket_id: String,
 }
 
 impl B2Client {
-    pub fn new() -> Result<Self, Box<dyn Error>> {
-        let application_key_id = env::var("B2_APPLICATION_KEY_ID")
-            .map_err(|_| "B2_APPLICATION_KEY_ID environment variable not set")?;
-        let application_key = env::var("B2_APPLICATION_KEY")
-            .map_err(|_| "B2_APPLICATION_KEY environment variable not set")?;
-        let bucket_id =
-            env::var("B2_BUCKET_ID").map_err(|_| "B2_BUCKET_ID environment variable not set")?;
-
+    pub fn new(
+        application_key_id: String,
+        application_key: String,
+        bucket_id: String,
+    ) -> Result<Self, Box<dyn Error>> {
         let client = Client::builder().timeout(Duration::from_secs(60)).build()?;
 
         Ok(B2Client {
             client,
-            auth_data: None,
-            auth_time: None,
+            auth_data: Arc::new(Mutex::new(None)),
+            auth_time: Arc::new(Mutex::new(None)),
             application_key_id,
             application_key,
             bucket_id,
         })
     }
 
+    // Create a new B2Client from a SecretStore
+    pub fn from_secrets(secrets: &shuttle_runtime::SecretStore) -> Result<Self, Box<dyn Error>> {
+        let application_key_id = secrets
+            .get("B2_APPLICATION_KEY_ID")
+            .ok_or("B2_APPLICATION_KEY_ID not found in secrets")?
+            .to_string();
+
+        let application_key = secrets
+            .get("B2_APPLICATION_KEY")
+            .ok_or("B2_APPLICATION_KEY not found in secrets")?
+            .to_string();
+
+        let bucket_id = secrets
+            .get("B2_BUCKET_ID")
+            .ok_or("B2_BUCKET_ID not found in secrets")?
+            .to_string();
+
+        Self::new(application_key_id, application_key, bucket_id)
+    }
+
     // Authorize account and get auth token
-    async fn authorize_account(&mut self) -> Result<AuthorizeAccountResponse, Box<dyn Error>> {
+    async fn authorize_account(&self) -> Result<AuthorizeAccountResponse, Box<dyn Error>> {
         // Check if we have a valid auth token (less than 23 hours old)
-        if let (Some(auth_time), Some(auth_data)) = (self.auth_time, &self.auth_data) {
+        let auth_time_guard = self.auth_time.lock().unwrap();
+        let auth_data_guard = self.auth_data.lock().unwrap();
+
+        if let (Some(auth_time), Some(auth_data)) = (&*auth_time_guard, &*auth_data_guard) {
             if auth_time.elapsed() < Duration::from_secs(23 * 60 * 60) {
                 return Ok(auth_data.clone());
             }
         }
+        drop(auth_time_guard);
+        drop(auth_data_guard);
 
         info!("Authorizing B2 account");
 
@@ -136,14 +159,18 @@ impl B2Client {
         let auth_data: AuthorizeAccountResponse = response.json().await?;
 
         // Cache the auth data
-        self.auth_data = Some(auth_data.clone());
-        self.auth_time = Some(Instant::now());
+        let mut auth_data_guard = self.auth_data.lock().unwrap();
+        *auth_data_guard = Some(auth_data.clone());
+        drop(auth_data_guard);
+
+        let mut auth_time_guard = self.auth_time.lock().unwrap();
+        *auth_time_guard = Some(Instant::now());
 
         Ok(auth_data)
     }
 
     // Get upload URL
-    async fn get_upload_url(&mut self) -> Result<GetUploadUrlResponse, Box<dyn Error>> {
+    async fn get_upload_url(&self) -> Result<GetUploadUrlResponse, Box<dyn Error>> {
         let auth = self.authorize_account().await?;
 
         let response = self
@@ -168,7 +195,7 @@ impl B2Client {
 
     // Upload file to B2
     pub async fn upload_file(
-        &mut self,
+        &self,
         file_data: &[u8],
         file_name: &str,
         content_type: &str,
@@ -220,7 +247,7 @@ impl B2Client {
     }
 
     // Find file ID by name
-    async fn find_file_id(&mut self, file_name: &str) -> Result<Option<String>, Box<dyn Error>> {
+    async fn find_file_id(&self, file_name: &str) -> Result<Option<String>, Box<dyn Error>> {
         let auth = self.authorize_account().await?;
 
         let response = self
@@ -254,7 +281,7 @@ impl B2Client {
     }
 
     // Delete file from B2
-    pub async fn delete_file(&mut self, file_name: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn delete_file(&self, file_name: &str) -> Result<(), Box<dyn Error>> {
         // First, find the file ID
         let file_id = match self.find_file_id(file_name).await? {
             Some(id) => id,

@@ -7,11 +7,12 @@ use actix_cors::Cors;
 use actix_identity::IdentityMiddleware;
 use actix_session::{storage::CookieSessionStore, SessionMiddleware};
 use actix_web::{
-    cookie::{ Key, SameSite},
+    cookie::{Key, SameSite},
     middleware::Logger,
     web, HttpResponse,
 };
 use anyhow;
+use handlers::b2_storage::B2Client;
 use handlers::ws::init_ws_routes;
 use log::{error, info};
 use middleware::{
@@ -40,7 +41,6 @@ use sqlx::PgPool;
 async fn main(
     #[shuttle_runtime::Secrets] secrets: SecretStore,
 ) -> ShuttleActixWeb<impl FnOnce(&mut web::ServiceConfig) + Send + Clone + 'static> {
-
     // Log startup message
     info!("=== Beyond The Horizon API Server Starting ===");
 
@@ -90,6 +90,22 @@ async fn main(
         info!("Database connection established but verification failed");
     }
 
+    // Initialize B2 storage client
+    let b2_client = match B2Client::from_secrets(&secrets) {
+        Ok(client) => {
+            info!("B2 storage client initialized successfully");
+            client
+        }
+        Err(e) => {
+            // Log warning but continue - some features requiring B2 storage will be disabled
+            error!("Failed to initialize B2 storage client: {}", e);
+            return Err(shuttle_runtime::Error::Custom(anyhow::anyhow!(
+                "B2 storage initialization failed: {}",
+                e
+            )));
+        }
+    };
+
     info!("Starting BTH API Server with Shuttle...");
 
     // Create a configuration closure for Shuttle
@@ -105,6 +121,7 @@ async fn main(
 
         cfg.app_data(web::Data::new(pool.clone()));
         cfg.app_data(web::Data::new(session_secret.clone()));
+        cfg.app_data(web::Data::new(b2_client)); // Make B2 client available to handlers
         cfg.service(
             web::scope("")
                 .wrap(Logger::new(

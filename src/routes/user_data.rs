@@ -268,11 +268,11 @@ pub async fn upload_avatar(
     };
 
     // Initialize B2 client
-    let mut b2_client = match B2Client::new() {
-        Ok(client) => client,
-        Err(e) => {
-            error!("Failed to initialize B2 client: {:?}", e);
-            return HttpResponse::InternalServerError().body("Failed to initialize storage client");
+    let b2_client = match req.app_data::<web::Data<B2Client>>() {
+        Some(client) => client.get_ref(),
+        None => {
+            error!("B2 client not available");
+            return HttpResponse::InternalServerError().body("Storage service unavailable");
         }
     };
 
@@ -415,12 +415,11 @@ pub async fn reset_avatar(pool: web::Data<PgPool>, req: HttpRequest) -> impl Res
     // Check if the current avatar is from B2 (not the default UI Avatars)
     if current_avatar.contains("/file/") && !current_avatar.contains("ui-avatars.com") {
         // Initialize B2 client
-        let mut b2_client = match B2Client::new() {
-            Ok(client) => client,
-            Err(e) => {
-                error!("Failed to initialize B2 client: {:?}", e);
-                return HttpResponse::InternalServerError()
-                    .body("Failed to initialize storage client");
+        let b2_client = match req.app_data::<web::Data<B2Client>>() {
+            Some(client) => client.get_ref(),
+            None => {
+                error!("B2 client not available");
+                return HttpResponse::InternalServerError().body("Storage service unavailable");
             }
         };
 

@@ -107,7 +107,8 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketSession 
                         debug!("Parsed message type: {}", client_message.message_type);
                         match client_message.message_type.as_str() {
                             "authentication" => {
-                                // Handle authentication message
+                                // This branch is kept for backward compatibility
+                                // but should not be needed with query parameter authentication
                                 if self.authenticated {
                                     info!("Already authenticated, ignoring authentication message");
                                     return;
@@ -116,7 +117,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketSession 
                                 match serde_json::from_value::<AuthMessage>(client_message.payload)
                                 {
                                     Ok(auth_data) => {
-                                        info!("Received authentication request");
+                                        info!("Received authentication request via message");
                                         // Verify and decode the token
                                         match decode::<Claims>(
                                             &auth_data.token,
@@ -130,7 +131,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketSession 
                                                 let role = token_data.claims.role;
 
                                                 info!(
-                                                    "WebSocket authenticated: {} with role {:?}",
+                                                    "WebSocket authenticated via message: {} with role {:?}",
                                                     user_id, role
                                                 );
 
@@ -212,12 +213,15 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketSession 
                                     return;
                                 }
 
-                                // Echo the message for now
+                                // Handle the message based on its type
                                 if let Some(user_id) = self.user_id {
                                     info!(
                                         "Received message from {}: {}",
                                         user_id, client_message.message_type
                                     );
+                                    
+                                    // For now, just echo the message back
+                                    // In a real implementation, you would handle different message types
                                     ctx.text(format!("Echo: {}", text));
                                 }
                             }

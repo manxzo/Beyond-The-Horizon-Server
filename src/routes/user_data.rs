@@ -295,74 +295,100 @@ pub async fn upload_avatar(
     let mut file_name: Option<String> = None;
     let mut content_type: Option<String> = None;
 
-    while let Ok(Some(mut field)) = payload.try_next().await {
+    // Improved multipart handling
+    info!("Starting to process multipart form data");
+
+    // Use a more robust approach to read the file data
+    while let Ok(Some(field)) = payload.try_next().await {
         let content_disposition = match field.content_disposition() {
             Some(cd) => cd,
-            None => continue,
+            None => {
+                info!("Field missing content disposition, skipping");
+                continue;
+            }
         };
 
-        if let Some(name) = content_disposition.get_name() {
-            if name == "avatar" {
-                // Get filename
-                let original_filename = content_disposition
-                    .get_filename()
-                    .map(|f| sanitize(f))
-                    .unwrap_or_else(|| format!("avatar_{}.jpg", Uuid::new_v4()));
+        let field_name = match content_disposition.get_name() {
+            Some(name) => name,
+            None => {
+                info!("Field missing name, skipping");
+                continue;
+            }
+        };
 
-                // Create a unique filename with user ID
-                let extension = original_filename.split('.').last().unwrap_or("jpg");
+        info!("Processing field: {}", field_name);
 
-                let unique_filename = format!("avatar_{}.{}", claims.id, extension);
-                file_name = Some(unique_filename);
+        if field_name == "avatar" {
+            // Get filename
+            let original_filename = content_disposition
+                .get_filename()
+                .map(|f| sanitize(f))
+                .unwrap_or_else(|| format!("avatar_{}.jpg", Uuid::new_v4()));
 
-                // Guess content type from filename
-                content_type = Some(
-                    from_path(&original_filename)
-                        .first_or_octet_stream()
-                        .to_string(),
-                );
+            info!("Original filename: {}", original_filename);
 
-                // Read file data
-                let mut data = Vec::new();
-                while let Some(chunk_result) = field.next().await {
-                    match chunk_result {
-                        Ok(chunk) => {
-                            if let Err(e) = data.write_all(&chunk) {
-                                error!("Error writing chunk to buffer: {:?}", e);
-                                return HttpResponse::InternalServerError()
-                                    .body("Error processing file upload");
-                            }
-                        }
-                        Err(e) => {
-                            error!("Error reading multipart chunk: {:?}", e);
-                            return HttpResponse::InternalServerError()
-                                .body("Error processing file upload");
-                        }
+            // Create a unique filename with user ID
+            let extension = original_filename.split('.').last().unwrap_or("jpg");
+            let unique_filename = format!("avatar_{}.{}", claims.id, extension);
+            file_name = Some(unique_filename.clone());
+            info!("Generated unique filename: {}", unique_filename);
+
+            // Guess content type from filename
+            let mime_type = from_path(&original_filename)
+                .first_or_octet_stream()
+                .to_string();
+            content_type = Some(mime_type.clone());
+            info!("Detected content type: {}", mime_type);
+
+            // Read file data using a more reliable approach
+            match read_field_body(field).await {
+                Ok(data) => {
+                    info!("Successfully read file data: {} bytes", data.len());
+
+                    // Check file size (limit to 5MB)
+                    if data.len() > 5 * 1024 * 1024 {
+                        error!("File too large: {} bytes", data.len());
+                        return HttpResponse::BadRequest().body("File too large (max 5MB)");
                     }
-                }
 
-                // Check file size (limit to 5MB)
-                if data.len() > 5 * 1024 * 1024 {
-                    return HttpResponse::BadRequest().body("File too large (max 5MB)");
+                    file_bytes = Some(data);
                 }
-
-                file_bytes = Some(data);
+                Err(e) => {
+                    error!("Failed to read field body: {:?}", e);
+                    return HttpResponse::InternalServerError()
+                        .body(format!("Error processing file upload: {}", e));
+                }
             }
         }
     }
 
     // Check if we have a file
     let (file_data, filename, mime_type) = match (file_bytes, file_name, content_type) {
-        (Some(data), Some(name), Some(mime)) => (data, name, mime),
-        _ => return HttpResponse::BadRequest().body("No avatar file provided"),
+        (Some(data), Some(name), Some(mime)) => {
+            info!(
+                "File data ready for upload: {} bytes, name: {}, type: {}",
+                data.len(),
+                name,
+                mime
+            );
+            (data, name, mime)
+        }
+        _ => {
+            error!("No avatar file provided or incomplete data");
+            return HttpResponse::BadRequest().body("No avatar file provided or incomplete data");
+        }
     };
 
     // Upload to B2
+    info!("Uploading file to B2 storage");
     let avatar_url = match b2_client
         .upload_file(&file_data, &filename, &mime_type)
         .await
     {
-        Ok(url) => url,
+        Ok(url) => {
+            info!("Successfully uploaded file to B2: {}", url);
+            url
+        }
         Err(e) => {
             error!("Failed to upload avatar to B2: {:?}", e);
             return HttpResponse::InternalServerError().body("Failed to upload avatar");
@@ -370,6 +396,7 @@ pub async fn upload_avatar(
     };
 
     // Update user's avatar URL in database
+    info!("Updating avatar URL in database");
     let result =
         sqlx::query("UPDATE users SET avatar_url = $1 WHERE user_id = $2 RETURNING avatar_url")
             .bind(&avatar_url)
@@ -380,6 +407,7 @@ pub async fn upload_avatar(
     match result {
         Ok(record) => {
             let avatar_url: String = record.get("avatar_url");
+            info!("Avatar URL updated successfully: {}", avatar_url);
             HttpResponse::Ok().json(AvatarUploadResponse { avatar_url })
         }
         Err(e) => {
@@ -387,6 +415,27 @@ pub async fn upload_avatar(
             HttpResponse::InternalServerError().body("Failed to update avatar URL in database")
         }
     }
+}
+
+// Helper function to read field body more reliably
+async fn read_field_body(
+    mut field: actix_multipart::Field,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut data = Vec::new();
+
+    while let Some(chunk) = field.next().await {
+        match chunk {
+            Ok(bytes) => {
+                data.write_all(&bytes)?;
+            }
+            Err(e) => {
+                error!("Error reading chunk: {:?}", e);
+                return Err(Box::new(e));
+            }
+        }
+    }
+
+    Ok(data)
 }
 
 // Reset avatar handler

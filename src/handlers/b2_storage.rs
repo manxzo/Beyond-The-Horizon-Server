@@ -10,19 +10,21 @@ use std::time::{Duration, Instant};
 // Backblaze B2 API response structures
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct AuthorizeAccountResponse {
-    #[serde(rename = "authorizationToken")]
-    pub authorization_token: String,
+    #[serde(rename = "absoluteMinimumPartSize")]
+    pub absolute_minimum_part_size: u64,
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    pub allowed: AllowedCapabilities,
     #[serde(rename = "apiUrl")]
     pub api_url: String,
+    #[serde(rename = "authorizationToken")]
+    pub authorization_token: String,
     #[serde(rename = "downloadUrl")]
     pub download_url: String,
     #[serde(rename = "recommendedPartSize")]
     pub recommended_part_size: u64,
-    #[serde(rename = "absoluteMinimumPartSize")]
-    pub absolute_minimum_part_size: u64,
     #[serde(rename = "s3ApiUrl")]
     pub s3_api_url: String,
-    pub allowed: AllowedCapabilities,
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
@@ -35,28 +37,35 @@ pub struct AllowedCapabilities {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GetUploadUrlResponse {
-    pub upload_url: String,
     #[serde(rename = "authorizationToken")]
     pub authorization_token: String,
+    #[serde(rename = "bucketId")]
     pub bucket_id: String,
+    #[serde(rename = "uploadUrl")]
+    pub upload_url: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UploadFileResponse {
-    #[serde(rename = "fileId")]
-    pub file_id: String,
-    #[serde(rename = "fileName")]
-    pub file_name: String,
     #[serde(rename = "accountId")]
     pub account_id: String,
+    pub action: Option<String>,
     #[serde(rename = "bucketId")]
     pub bucket_id: String,
     #[serde(rename = "contentLength")]
     pub content_length: u64,
+    #[serde(rename = "contentMd5")]
+    pub content_md5: Option<String>,
     #[serde(rename = "contentSha1")]
     pub content_sha1: String,
     #[serde(rename = "contentType")]
     pub content_type: String,
+    #[serde(rename = "fileId")]
+    pub file_id: String,
+    #[serde(rename = "fileInfo")]
+    pub file_info: Option<serde_json::Value>,
+    #[serde(rename = "fileName")]
+    pub file_name: String,
     #[serde(rename = "uploadTimestamp")]
     pub upload_timestamp: u64,
 }
@@ -145,13 +154,17 @@ impl B2Client {
 
         if let (Some(auth_time), Some(auth_data)) = (&*auth_time_guard, &*auth_data_guard) {
             if auth_time.elapsed() < Duration::from_secs(23 * 60 * 60) {
+                debug!("Using cached B2 authorization token");
                 return Ok(auth_data.clone());
             }
         }
         drop(auth_time_guard);
         drop(auth_data_guard);
 
-        info!("Authorizing B2 account");
+        info!(
+            "Authorizing B2 account with key ID: {}",
+            self.application_key_id
+        );
 
         // Create basic auth header
         let auth = format!("{}:{}", self.application_key_id, self.application_key);
@@ -165,13 +178,34 @@ impl B2Client {
             .send()
             .await?;
 
+        // Log the status code
+        info!("B2 authorization response status: {}", response.status());
+
         if !response.status().is_success() {
             let error_text = response.text().await?;
             error!("B2 authorization failed: {}", error_text);
             return Err(format!("B2 authorization failed: {}", error_text).into());
         }
 
-        let auth_data: AuthorizeAccountResponse = response.json().await?;
+        // Get the response body as text first for logging
+        let response_text = response.text().await?;
+        debug!("B2 authorization response: {}", response_text);
+
+        // Parse the response
+        let auth_data: AuthorizeAccountResponse = match serde_json::from_str(&response_text) {
+            Ok(data) => data,
+            Err(e) => {
+                error!("Failed to parse B2 authorization response: {}", e);
+                error!("Response was: {}", response_text);
+                return Err(format!("Failed to parse B2 authorization response: {}", e).into());
+            }
+        };
+
+        // Log successful authorization
+        info!(
+            "B2 authorization successful. API URL: {}",
+            auth_data.api_url
+        );
 
         // Cache the auth data
         let mut auth_data_guard = self.auth_data.lock().unwrap();
@@ -188,7 +222,7 @@ impl B2Client {
     async fn get_upload_url(&self) -> Result<GetUploadUrlResponse, Box<dyn Error>> {
         let auth = self.authorize_account().await?;
 
-        debug!("Getting upload URL for bucket: {}", self.bucket_id);
+        info!("Getting upload URL for bucket: {}", self.bucket_id);
 
         let response = self
             .client
@@ -200,20 +234,31 @@ impl B2Client {
             .send()
             .await?;
 
+        // Log the status code
+        info!("B2 get_upload_url response status: {}", response.status());
+
         if !response.status().is_success() {
             let error_text = response.text().await?;
             error!("Failed to get upload URL: {}", error_text);
             return Err(format!("Failed to get upload URL: {}", error_text).into());
         }
 
+        // Get the response body as text first for logging
+        let response_text = response.text().await?;
+        info!("B2 get_upload_url response: {}", response_text);
+
         // Parse the response
-        match response.json::<GetUploadUrlResponse>().await {
-            Ok(upload_url) => Ok(upload_url),
+        let upload_url: GetUploadUrlResponse = match serde_json::from_str(&response_text) {
+            Ok(url) => url,
             Err(e) => {
                 error!("Failed to parse upload URL response: {}", e);
-                Err(format!("Failed to parse upload URL response: {}", e).into())
+                error!("Response was: {}", response_text);
+                return Err(format!("Failed to parse upload URL response: {}", e).into());
             }
-        }
+        };
+
+        info!("Got B2 upload URL: {}", upload_url.upload_url);
+        Ok(upload_url)
     }
 
     // Upload file to B2
@@ -231,10 +276,11 @@ impl B2Client {
         let sha1_hash = hasher.finalize();
         let sha1_hex = format!("{:x}", sha1_hash);
 
-        debug!(
-            "Uploading file {} ({} bytes) to B2",
+        info!(
+            "Uploading file {} ({} bytes) to B2 with URL: {}",
             file_name,
-            file_data.len()
+            file_data.len(),
+            upload_url.upload_url
         );
 
         // Upload the file
@@ -250,21 +296,25 @@ impl B2Client {
             .send()
             .await?;
 
+        // Log the status code
+        info!("B2 upload_file response status: {}", response.status());
+
         if !response.status().is_success() {
             let error_text = response.text().await?;
             error!("Failed to upload file: {}", error_text);
             return Err(format!("Failed to upload file: {}", error_text).into());
         }
 
-        // Log the raw response for debugging
+        // Get the response body as text first for logging
         let response_text = response.text().await?;
-        debug!("B2 upload file response: {}", response_text);
+        info!("B2 upload_file response: {}", response_text);
 
-        // Parse the response manually
+        // Parse the response
         let upload_response: UploadFileResponse = match serde_json::from_str(&response_text) {
             Ok(resp) => resp,
             Err(e) => {
                 error!("Failed to parse upload file response: {}", e);
+                error!("Response was: {}", response_text);
                 return Err(format!("Failed to parse upload file response: {}", e).into());
             }
         };

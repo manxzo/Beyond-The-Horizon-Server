@@ -89,7 +89,7 @@ where
 
             // If cookie auth failed, try JWT token auth
             if !cookie_auth {
-                // Check for Authorization header
+                // First check for Authorization header
                 if let Some(auth_header) = req.headers().get("Authorization") {
                     if let Ok(auth_str) = auth_header.to_str() {
                         if auth_str.starts_with("Bearer ") {
@@ -109,7 +109,7 @@ where
                             ) {
                                 Ok(token_data) => {
                                     info!(
-                                        "Successfully authenticated user via JWT: {}",
+                                        "Successfully authenticated user via JWT header: {}",
                                         token_data.claims.username
                                     );
                                     req.extensions_mut().insert(token_data.claims);
@@ -122,12 +122,46 @@ where
                         }
                     }
                 }
+                
+                // If header auth failed, check for token in query parameters (for WebSocket connections)
+                if let Some(token) = req.query_string().split('&').find_map(|param| {
+                    if param.starts_with("token=") {
+                        Some(param.trim_start_matches("token="))
+                    } else {
+                        None
+                    }
+                }) {
+                    info!("Found token in query parameters");
+                    
+                    // Get the session secret
+                    let session_secret = req
+                        .app_data::<web::Data<String>>()
+                        .map(|data| data.get_ref().clone())
+                        .unwrap_or_else(|| "default_session_secret".to_string());
+
+                    // Verify and decode the token
+                    match jsonwebtoken::decode::<Claims>(
+                        token,
+                        &jsonwebtoken::DecodingKey::from_secret(session_secret.as_bytes()),
+                        &jsonwebtoken::Validation::default(),
+                    ) {
+                        Ok(token_data) => {
+                            info!(
+                                "Successfully authenticated user via JWT query param: {}",
+                                token_data.claims.username
+                            );
+                            req.extensions_mut().insert(token_data.claims);
+                            return service.call(req).await;
+                        }
+                        Err(e) => {
+                            error!("JWT validation from query param failed: {}", e);
+                        }
+                    }
+                }
 
                 // If we get here, both auth methods failed
-                if !cookie_auth {
-                    error!("No valid authentication found");
-                    return Err(actix_web::error::ErrorUnauthorized("Authentication failed"));
-                }
+                error!("No valid authentication found");
+                return Err(actix_web::error::ErrorUnauthorized("Authentication failed"));
             }
 
             // If we get here, cookie auth succeeded

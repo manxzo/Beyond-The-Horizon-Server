@@ -105,127 +105,23 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketSession 
                 match serde_json::from_str::<WebSocketClientMessage>(&text) {
                     Ok(client_message) => {
                         debug!("Parsed message type: {}", client_message.message_type);
-                        match client_message.message_type.as_str() {
-                            "authentication" => {
-                                // This branch is kept for backward compatibility
-                                // but should not be needed with query parameter authentication
-                                if self.authenticated {
-                                    info!("Already authenticated, ignoring authentication message");
-                                    return;
+
+                        // We no longer need to handle authentication messages since we authenticate via URL token
+                        // Just handle regular messages
+                        if !self.authenticated {
+                            error!("Received message from unauthenticated client");
+                            let response = serde_json::json!({
+                                "type": "error",
+                                "payload": {
+                                    "message": "Not authenticated"
                                 }
-
-                                match serde_json::from_value::<AuthMessage>(client_message.payload)
-                                {
-                                    Ok(auth_data) => {
-                                        info!("Received authentication request via message");
-                                        // Verify and decode the token
-                                        match decode::<Claims>(
-                                            &auth_data.token,
-                                            &DecodingKey::from_secret(
-                                                self.session_secret.as_bytes(),
-                                            ),
-                                            &Validation::default(),
-                                        ) {
-                                            Ok(token_data) => {
-                                                let user_id = token_data.claims.id;
-                                                let role = token_data.claims.role;
-
-                                                info!(
-                                                    "WebSocket authenticated via message: {} with role {:?}",
-                                                    user_id, role
-                                                );
-
-                                                // Set up the session
-                                                self.user_id = Some(user_id);
-                                                self.role = Some(role);
-                                                self.authenticated = true;
-
-                                                // Set up the channel
-                                                let (tx, rx): (
-                                                    UnboundedSender<ws::Message>,
-                                                    UnboundedReceiver<ws::Message>,
-                                                ) = unbounded();
-                                                self.tx = Some(tx.clone());
-
-                                                // Register in the active connections
-                                                {
-                                                    let mut sockets = USER_SOCKETS.lock().unwrap();
-                                                    sockets.insert(user_id, (role, tx));
-                                                    info!(
-                                                        "Active WebSocket connections: {}",
-                                                        sockets.len()
-                                                    );
-                                                }
-
-                                                // Add the stream to the context
-                                                ctx.add_stream(rx.map(|m| Ok(m)));
-
-                                                // Send confirmation
-                                                let response = serde_json::json!({
-                                                    "type": "authentication_success",
-                                                    "payload": {
-                                                        "user_id": user_id.to_string(),
-                                                        "role": role
-                                                    }
-                                                });
-                                                info!("Sending authentication success response");
-                                                ctx.text(serde_json::to_string(&response).unwrap());
-                                            }
-                                            Err(e) => {
-                                                error!("WebSocket authentication failed: {}", e);
-                                                let response = serde_json::json!({
-                                                    "type": "authentication_error",
-                                                    "payload": {
-                                                        "message": "Invalid token"
-                                                    }
-                                                });
-                                                ctx.text(serde_json::to_string(&response).unwrap());
-                                                ctx.close(None);
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to parse authentication payload: {}", e);
-                                        let response = serde_json::json!({
-                                            "type": "error",
-                                            "payload": {
-                                                "message": "Invalid authentication payload"
-                                            }
-                                        });
-                                        ctx.text(serde_json::to_string(&response).unwrap());
-                                    }
-                                }
-                            }
-                            _ => {
-                                // Handle other message types
-                                if !self.authenticated {
-                                    warn!(
-                                        "Received message from unauthenticated client: {}",
-                                        client_message.message_type
-                                    );
-                                    let response = serde_json::json!({
-                                        "type": "error",
-                                        "payload": {
-                                            "message": "Not authenticated"
-                                        }
-                                    });
-                                    ctx.text(serde_json::to_string(&response).unwrap());
-                                    return;
-                                }
-
-                                // Handle the message based on its type
-                                if let Some(user_id) = self.user_id {
-                                    info!(
-                                        "Received message from {}: {}",
-                                        user_id, client_message.message_type
-                                    );
-                                    
-                                    // For now, just echo the message back
-                                    // In a real implementation, you would handle different message types
-                                    ctx.text(format!("Echo: {}", text));
-                                }
-                            }
+                            });
+                            ctx.text(serde_json::to_string(&response).unwrap());
+                            return;
                         }
+
+                        // Handle other message types here
+                        // ...
                     }
                     Err(e) => {
                         error!("Invalid message format: {}", e);
@@ -304,9 +200,52 @@ pub async fn ws_connect(req: HttpRequest, stream: web::Payload) -> Result<HttpRe
         return ws::start(session, &req, stream);
     }
 
+    // If we get here, the user is not authenticated via middleware
+    // Try to authenticate using the WebSocket protocol
+    if let Some(protocols) = req.headers().get("sec-websocket-protocol") {
+        if let Ok(protocols_str) = protocols.to_str() {
+            // Extract token from protocol
+            for protocol in protocols_str.split(',').map(|s| s.trim()) {
+                if protocol.starts_with("token-") {
+                    let token = protocol.trim_start_matches("token-");
+                    info!("Found token in WebSocket protocol");
+
+                    // Verify the token
+                    match decode::<Claims>(
+                        token,
+                        &DecodingKey::from_secret(session_secret.as_bytes()),
+                        &Validation::default(),
+                    ) {
+                        Ok(token_data) => {
+                            let user_id = token_data.claims.id;
+                            let role = token_data.claims.role;
+
+                            info!("WebSocket authenticated via protocol: {}", user_id);
+
+                            // Create an authenticated session
+                            let session = WebSocketSession {
+                                user_id: Some(user_id),
+                                role: Some(role),
+                                tx: None,
+                                session_secret,
+                                authenticated: true,
+                            };
+
+                            // Start the WebSocket connection
+                            info!("Starting WebSocket connection for authenticated user");
+                            return ws::start(session, &req, stream);
+                        }
+                        Err(e) => {
+                            error!("Invalid token in WebSocket protocol: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // If we get here, the user is not authenticated
-    // This should not happen with the auth middleware in place
-    warn!("WebSocket connection attempt without authentication");
+    warn!("WebSocket connection attempt without valid authentication");
 
     // Create an unauthenticated session
     let session = WebSocketSession {
@@ -323,54 +262,187 @@ pub async fn ws_connect(req: HttpRequest, stream: web::Payload) -> Result<HttpRe
 }
 
 ///  Send a payload to a single user
-pub async fn send_to_user(user_id: &Uuid, payload: Value) {
+pub async fn send_to_user(user_id: &Uuid, payload: Value) -> Result<(), String> {
     let msg_str = match serde_json::to_string(&payload) {
         Ok(s) => s,
-        Err(_) => return,
+        Err(e) => {
+            error!("Failed to serialize payload for user {}: {}", user_id, e);
+            return Err(format!("Serialization error: {}", e));
+        }
     };
-    let sockets = USER_SOCKETS.lock().unwrap();
+
+    let sockets = match USER_SOCKETS.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            error!("Failed to acquire lock on USER_SOCKETS: {}", e);
+            return Err("Internal server error: Failed to acquire lock".to_string());
+        }
+    };
+
     if let Some((_, tx)) = sockets.get(user_id) {
-        let _ = tx.unbounded_send(ws::Message::Text(msg_str.clone().into()));
+        match tx.unbounded_send(ws::Message::Text(msg_str.into())) {
+            Ok(_) => {
+                debug!("Message sent successfully to user {}", user_id);
+                Ok(())
+            }
+            Err(e) => {
+                error!("Failed to send message to user {}: {}", user_id, e);
+                Err(format!("Send error: {}", e))
+            }
+        }
+    } else {
+        warn!("User {} not connected", user_id);
+        Err(format!("User {} not connected", user_id))
     }
 }
 
 ///  Send a payload to all users with a specific role
-pub async fn send_to_role(role: &UserRole, payload: Value) {
+pub async fn send_to_role(role: &UserRole, payload: Value) -> Result<usize, String> {
     let msg_str = match serde_json::to_string(&payload) {
         Ok(s) => s,
-        Err(_) => return,
-    };
-    let sockets = USER_SOCKETS.lock().unwrap();
-    for (_, (user_role, tx)) in sockets.iter() {
-        if user_role == role {
-            let _ = tx.unbounded_send(ws::Message::Text(msg_str.clone().into()));
+        Err(e) => {
+            error!("Failed to serialize payload for role {:?}: {}", role, e);
+            return Err(format!("Serialization error: {}", e));
         }
+    };
+
+    let sockets = match USER_SOCKETS.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            error!("Failed to acquire lock on USER_SOCKETS: {}", e);
+            return Err("Internal server error: Failed to acquire lock".to_string());
+        }
+    };
+
+    let mut success_count = 0;
+    let mut errors = Vec::new();
+
+    for (user_id, (user_role, tx)) in sockets.iter() {
+        if user_role == role {
+            match tx.unbounded_send(ws::Message::Text(msg_str.clone().into())) {
+                Ok(_) => {
+                    debug!(
+                        "Message sent successfully to user {} with role {:?}",
+                        user_id, role
+                    );
+                    success_count += 1;
+                }
+                Err(e) => {
+                    let error_msg = format!(
+                        "Failed to send message to user {} with role {:?}: {}",
+                        user_id, role, e
+                    );
+                    error!("{}", error_msg);
+                    errors.push(error_msg);
+                }
+            }
+        }
+    }
+
+    if !errors.is_empty() && success_count == 0 {
+        Err(format!(
+            "Failed to send to any users with role {:?}: {}",
+            role,
+            errors.join(", ")
+        ))
+    } else {
+        Ok(success_count)
     }
 }
 
 ///  Send a payload to multiple users
-pub async fn send_to_users(user_ids: &[Uuid], payload: Value) {
+pub async fn send_to_users(user_ids: &[Uuid], payload: Value) -> Result<usize, String> {
     let msg_str = match serde_json::to_string(&payload) {
         Ok(s) => s,
-        Err(_) => return,
+        Err(e) => {
+            error!("Failed to serialize payload for multiple users: {}", e);
+            return Err(format!("Serialization error: {}", e));
+        }
     };
-    let sockets = USER_SOCKETS.lock().unwrap();
+
+    let sockets = match USER_SOCKETS.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            error!("Failed to acquire lock on USER_SOCKETS: {}", e);
+            return Err("Internal server error: Failed to acquire lock".to_string());
+        }
+    };
+
+    let mut success_count = 0;
+    let mut errors = Vec::new();
+
     for user_id in user_ids {
         if let Some((_, tx)) = sockets.get(user_id) {
-            let _ = tx.unbounded_send(ws::Message::Text(msg_str.clone().into()));
+            match tx.unbounded_send(ws::Message::Text(msg_str.clone().into())) {
+                Ok(_) => {
+                    debug!("Message sent successfully to user {}", user_id);
+                    success_count += 1;
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to send message to user {}: {}", user_id, e);
+                    error!("{}", error_msg);
+                    errors.push(error_msg);
+                }
+            }
+        } else {
+            let error_msg = format!("User {} not connected", user_id);
+            warn!("{}", error_msg);
+            errors.push(error_msg);
         }
+    }
+
+    if !errors.is_empty() && success_count == 0 {
+        Err(format!(
+            "Failed to send to any users: {}",
+            errors.join(", ")
+        ))
+    } else {
+        Ok(success_count)
     }
 }
 
 ///  Send a payload to all users
-pub async fn send_to_all(payload: Value) {
+pub async fn send_to_all(payload: Value) -> Result<usize, String> {
     let msg_str = match serde_json::to_string(&payload) {
         Ok(s) => s,
-        Err(_) => return,
+        Err(e) => {
+            error!("Failed to serialize payload for broadcast: {}", e);
+            return Err(format!("Serialization error: {}", e));
+        }
     };
-    let sockets = USER_SOCKETS.lock().unwrap();
-    for (_, (_, tx)) in sockets.iter() {
-        let _ = tx.unbounded_send(ws::Message::Text(msg_str.clone().into()));
+
+    let sockets = match USER_SOCKETS.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            error!("Failed to acquire lock on USER_SOCKETS: {}", e);
+            return Err("Internal server error: Failed to acquire lock".to_string());
+        }
+    };
+
+    let mut success_count = 0;
+    let mut errors = Vec::new();
+
+    for (user_id, (_, tx)) in sockets.iter() {
+        match tx.unbounded_send(ws::Message::Text(msg_str.clone().into())) {
+            Ok(_) => {
+                debug!("Message sent successfully to user {}", user_id);
+                success_count += 1;
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to send message to user {}: {}", user_id, e);
+                error!("{}", error_msg);
+                errors.push(error_msg);
+            }
+        }
+    }
+
+    if !errors.is_empty() && success_count == 0 {
+        Err(format!(
+            "Failed to broadcast to any users: {}",
+            errors.join(", ")
+        ))
+    } else {
+        Ok(success_count)
     }
 }
 
@@ -401,26 +473,53 @@ pub struct SendToAllRequest {
 // Handler functions for routes
 /// Handler to send a payload to a single user
 pub async fn send_to_user_handler(req: web::Json<SendToUserRequest>) -> impl Responder {
-    send_to_user(&req.user_id, req.payload.clone()).await;
-    HttpResponse::Ok().json("Message sent to specified user")
+    match send_to_user(&req.user_id, req.payload.clone()).await {
+        Ok(_) => HttpResponse::Ok().json("Message sent to specified user"),
+        Err(e) => {
+            error!("Failed to send message to user {}: {}", req.user_id, e);
+            HttpResponse::InternalServerError().json(format!("Failed to send message: {}", e))
+        }
+    }
 }
 
 /// Handler to send a payload to all users with a specific role
 pub async fn send_to_role_handler(req: web::Json<SendToRoleRequest>) -> impl Responder {
-    send_to_role(&req.role, req.payload.clone()).await;
-    HttpResponse::Ok().json("Message sent to users with specified role")
+    match send_to_role(&req.role, req.payload.clone()).await {
+        Ok(count) => HttpResponse::Ok().json(format!(
+            "Message sent to {} users with specified role",
+            count
+        )),
+        Err(e) => {
+            error!("Failed to send message to role {:?}: {}", req.role, e);
+            HttpResponse::InternalServerError().json(format!("Failed to send message: {}", e))
+        }
+    }
 }
 
 /// Handler to send a payload to multiple users
 pub async fn send_to_users_handler(payload: web::Json<SendToUsersRequest>) -> impl Responder {
-    send_to_users(&payload.user_ids, payload.payload.clone()).await;
-    HttpResponse::Ok().json("Custom payload sent to specified users")
+    match send_to_users(&payload.user_ids, payload.payload.clone()).await {
+        Ok(count) => {
+            HttpResponse::Ok().json(format!("Custom payload sent to {} specified users", count))
+        }
+        Err(e) => {
+            error!("Failed to send message to multiple users: {}", e);
+            HttpResponse::InternalServerError().json(format!("Failed to send message: {}", e))
+        }
+    }
 }
 
 /// Handler to send a payload to all users
 pub async fn send_to_all_handler(payload: web::Json<SendToAllRequest>) -> impl Responder {
-    send_to_all(payload.payload.clone()).await;
-    HttpResponse::Ok().json("Custom payload broadcasted to all users")
+    match send_to_all(payload.payload.clone()).await {
+        Ok(count) => {
+            HttpResponse::Ok().json(format!("Custom payload broadcasted to {} users", count))
+        }
+        Err(e) => {
+            error!("Failed to broadcast message: {}", e);
+            HttpResponse::InternalServerError().json(format!("Failed to broadcast message: {}", e))
+        }
+    }
 }
 
 /// ws routes

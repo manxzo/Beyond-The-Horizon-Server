@@ -3,12 +3,12 @@ use crate::handlers::ws;
 use crate::models::all_models::{
     GroupChat, GroupMeeting, SupportGroup, SupportGroupMember, UserRole,
 };
-use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::PgPool;
 use sqlx::prelude::FromRow;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 //Suggest Support Group Request
@@ -387,7 +387,7 @@ pub async fn list_my_support_groups(
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     if let Some(claims) = req.extensions().get::<Claims>() {
-        let user_id = &claims.id; 
+        let user_id = &claims.id;
 
         let query = r#"
             SELECT sg.support_group_id, sg.title, sg.description, sgm.joined_at
@@ -416,18 +416,18 @@ pub async fn list_my_support_groups(
 //Config Support Group Routes
 // POST /support-groups/suggest
 // GET /support-groups/list
+// GET /support-groups/my
 // GET /support-groups/{group_id}
 // POST /support-groups/join
 // DELETE /support-groups/{group_id}/leave
-// GET /support-groups/my
 pub fn config_support_group_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/support-groups")
             .route("/suggest", web::post().to(suggest_support_group))
             .route("/list", web::get().to(list_support_groups))
+            .route("/my", web::get().to(list_my_support_groups))
             .route("/{group_id}", web::get().to(get_support_group_details))
             .route("/join", web::post().to(join_support_group))
-            .route("/{group_id}/leave", web::delete().to(leave_support_group))
-            .route("/my", web::get().to(list_my_support_groups)),
+            .route("/{group_id}/leave", web::delete().to(leave_support_group)),
     );
 }

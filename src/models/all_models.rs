@@ -159,6 +159,7 @@ pub struct GroupMeeting {
     pub description: Option<String>,
     pub scheduled_time: NaiveDateTime,
     pub status: MeetingStatus,
+    pub meeting_chat_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]

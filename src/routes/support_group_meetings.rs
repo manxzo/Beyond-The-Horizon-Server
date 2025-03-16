@@ -659,15 +659,11 @@ pub async fn end_meeting(
 // POST /meetings/{meeting_id}/start
 // POST /meetings/{meeting_id}/end
 pub fn config_meeting_routes(cfg: &mut web::ServiceConfig) {
-    // For creating meetings in a specific support group.
-    cfg.service(
-        web::scope("/support-groups")
-            .route("/new-meeting", web::post().to(create_support_group_meeting)),
-    );
-
+   
     // For operations on individual meetings.
     cfg.service(
         web::scope("/meetings")
+        .route("/new", web::post().to(create_support_group_meeting))
             .route("/{meeting_id}/join", web::post().to(join_meeting))
             .route("/{meeting_id}/leave", web::delete().to(leave_meeting))
             .route(

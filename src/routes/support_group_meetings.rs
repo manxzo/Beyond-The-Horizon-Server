@@ -50,7 +50,7 @@ pub async fn create_support_group_meeting(
         let query = "
             INSERT INTO group_meetings (meeting_id, group_chat_id, host_id, title, description, scheduled_time, support_group_id, status)
             VALUES ($1, $2, $3, $4, $5, $6, $7, 'upcoming')
-            RETURNING meeting_id, group_chat_id, support_group_id, host_id, title, description, scheduled_time, status
+            RETURNING meeting_id, group_chat_id, support_group_id, host_id, title, description, scheduled_time, status, meeting_chat_id
         ";
 
         let meeting_id = Uuid::new_v4();
@@ -659,11 +659,10 @@ pub async fn end_meeting(
 // POST /meetings/{meeting_id}/start
 // POST /meetings/{meeting_id}/end
 pub fn config_meeting_routes(cfg: &mut web::ServiceConfig) {
-   
     // For operations on individual meetings.
     cfg.service(
         web::scope("/meetings")
-        .route("/new", web::post().to(create_support_group_meeting))
+            .route("/new", web::post().to(create_support_group_meeting))
             .route("/{meeting_id}/join", web::post().to(join_meeting))
             .route("/{meeting_id}/leave", web::delete().to(leave_meeting))
             .route(

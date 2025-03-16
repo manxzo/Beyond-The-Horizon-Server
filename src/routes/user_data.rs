@@ -144,6 +144,64 @@ pub async fn get_user_by_name(pool: web::Data<PgPool>, path: web::Path<String>) 
     }
 }
 
+//Get User By ID
+//Get User By ID Input: Path (/users/id/{user_id})
+//Get User By ID Output: PublicUserInfo or PrivateUserInfo
+pub async fn get_user_by_id(pool: web::Data<PgPool>, path: web::Path<Uuid>) -> impl Responder {
+    let user_id = path.into_inner();
+
+    // Debug log to check the user ID being queried
+    eprintln!("Looking up user with ID: {}", user_id);
+
+    let privacy_result =
+        sqlx::query_as::<_, UserPrivacyCheck>("SELECT privacy FROM users WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(pool.get_ref())
+            .await;
+
+    match privacy_result {
+        Ok(privacy_data) => {
+            eprintln!("Found user, privacy setting: {}", privacy_data.privacy);
+            if privacy_data.privacy {
+                let private_user_result = sqlx::query_as::<_, PrivateUserInfo>(
+                    "SELECT username, role::text as role, avatar_url FROM users WHERE user_id = $1",
+                )
+                .bind(user_id)
+                .fetch_one(pool.get_ref())
+                .await;
+
+                return match private_user_result {
+                    Ok(private_user) => HttpResponse::Ok().json(private_user),
+                    Err(e) => {
+                        eprintln!("Error fetching private user data: {:?}", e);
+                        HttpResponse::InternalServerError().body("Failed to retrieve user data")
+                    }
+                };
+            }
+
+            let user_result = sqlx::query_as::<_, PublicUserInfo>(
+                "SELECT username, role::text as role, avatar_url, user_profile, bio, interests, experience, languages
+                FROM users WHERE user_id = $1"
+            )
+            .bind(user_id)
+            .fetch_one(pool.get_ref())
+            .await;
+
+            match user_result {
+                Ok(user) => HttpResponse::Ok().json(user),
+                Err(e) => {
+                    eprintln!("Error fetching public user data: {:?}", e);
+                    HttpResponse::InternalServerError().body("Failed to retrieve user data")
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Error checking user privacy: {:?}", e);
+            HttpResponse::NotFound().body("User not found")
+        }
+    }
+}
+
 //Update User Request
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UpdateUserRequest {
@@ -527,6 +585,7 @@ pub async fn get_current_user(req: HttpRequest) -> impl Responder {
 // Config User Data Routes
 // GET /users/info
 // GET /users/{username}
+// GET /users/id/{user_id}
 // PATCH /users/update-info
 // DELETE /users/delete-user
 pub fn config_user_data_routes(cfg: &mut web::ServiceConfig) {
@@ -534,6 +593,7 @@ pub fn config_user_data_routes(cfg: &mut web::ServiceConfig) {
         web::scope("/users")
             .route("/info", web::get().to(get_logged_in_user_info))
             .route("/{username}", web::get().to(get_user_by_name))
+            .route("/id/{user_id}", web::get().to(get_user_by_id))
             .route("/update-info", web::patch().to(update_user_profile))
             .route("/delete-user", web::delete().to(delete_user_account))
             .route("/avatar/upload", web::post().to(upload_avatar))

@@ -662,7 +662,7 @@ pub fn config_meeting_routes(cfg: &mut web::ServiceConfig) {
     // For creating meetings in a specific support group.
     cfg.service(
         web::scope("/support-groups")
-            .route("/{group_id}/meetings", web::post().to(create_support_group_meeting)),
+            .route("/new-meeting", web::post().to(create_support_group_meeting)),
     );
 
     // For operations on individual meetings.

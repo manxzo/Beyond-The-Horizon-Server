@@ -1,7 +1,7 @@
 use crate::handlers::auth::Claims;
 
 use crate::models::all_models::{
-    GroupChat, GroupMeeting, SupportGroup, SupportGroupMember,
+    GroupChat, GroupMeeting, SupportGroup, SupportGroupMember, SupportGroupStatus, UserRole,
 };
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::NaiveDateTime;
@@ -28,12 +28,13 @@ pub async fn suggest_support_group(
     if let Some(_claims) = req.extensions().get::<Claims>() {
         let query = "
             INSERT INTO support_groups (title, description, admin_id, status, created_at)
-            VALUES ($1, $2, NULL, 'pending', NOW())
+            VALUES ($1, $2, NULL, $3, NOW())
             RETURNING support_group_id, title, description, admin_id, group_chat_id, status, created_at
         ";
         let support_group = sqlx::query_as::<_, SupportGroup>(query)
             .bind(&payload.title)
             .bind(&payload.description)
+            .bind(SupportGroupStatus::Pending)
             .fetch_one(pool.get_ref())
             .await;
         match support_group {
@@ -78,12 +79,13 @@ pub async fn list_support_groups(pool: web::Data<PgPool>, req: HttpRequest) -> i
         FROM support_groups sg
         LEFT JOIN support_group_members sgm 
             ON sg.support_group_id = sgm.support_group_id
-        WHERE sg.status = 'approved'
+        WHERE sg.status = $1
         GROUP BY sg.support_group_id, sg.title, sg.description, sg.created_at
         ORDER BY sg.created_at DESC
     "#;
 
     match sqlx::query_as::<_, SupportGroupSummary>(query)
+        .bind(SupportGroupStatus::Approved)
         .fetch_all(pool.get_ref())
         .await
     {
@@ -291,10 +293,11 @@ pub async fn get_support_group_details(
         SELECT u.user_id, u.username, u.avatar_url, u.role
         FROM support_group_members sgm
         JOIN users u ON sgm.user_id = u.user_id
-        WHERE sgm.support_group_id = $1 AND u.role = 'sponsor'
+        WHERE sgm.support_group_id = $1 AND u.role = $2
     "#;
     let sponsors: Vec<SponsorInfo> = match sqlx::query_as::<_, SponsorInfo>(sponsors_query)
         .bind(support_group_id)
+        .bind(UserRole::Sponsor)
         .fetch_all(pool.get_ref())
         .await
     {
@@ -387,15 +390,24 @@ pub async fn list_my_support_groups(
         let user_id = &claims.id;
 
         let query = r#"
-            SELECT sg.support_group_id, sg.title, sg.description, sgm.joined_at
-            FROM support_groups sg
-            JOIN support_group_members sgm ON sg.support_group_id = sgm.support_group_id
-            WHERE sgm.user_id = $1 AND sg.status = 'approved'
-            ORDER BY sgm.joined_at DESC
+            SELECT 
+                sg.support_group_id, 
+                sg.title, 
+                sg.description, 
+                sgm.joined_at
+            FROM 
+                support_groups sg
+            JOIN 
+                support_group_members sgm ON sg.support_group_id = sgm.support_group_id
+            WHERE 
+                sgm.user_id = $1 AND sg.status = $2
+            ORDER BY 
+                sgm.joined_at DESC
         "#;
 
         match sqlx::query_as::<_, UserSupportGroups>(query)
             .bind(user_id)
+            .bind(SupportGroupStatus::Approved)
             .fetch_all(pool.get_ref())
             .await
         {

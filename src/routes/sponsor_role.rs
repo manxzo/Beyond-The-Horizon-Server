@@ -68,10 +68,7 @@ pub async fn submit_sponsor_application(
                     .await;
 
                 match application_result {
-                    Ok(application) => {
-                   
-                        HttpResponse::Ok().json(application)
-                    }
+                    Ok(application) => HttpResponse::Ok().json(application),
                     Err(_) => {
                         HttpResponse::InternalServerError().body("Failed to submit application")
                     }
@@ -141,21 +138,20 @@ pub async fn update_sponsor_application(
                 // Update application - if rejected, set back to pending
                 let update_query = "
                     UPDATE sponsor_applications 
-                    SET application_info = $1, status = CASE WHEN status = 'rejected' THEN 'pending' ELSE status END 
-                    WHERE user_id = $2
+                    SET application_info = $1, status = CASE WHEN status = $2 THEN $3 ELSE status END 
+                    WHERE user_id = $4
                     RETURNING application_id, user_id, status, application_info, reviewed_by, admin_comments, created_at";
 
                 let updated_result = sqlx::query_as::<_, SponsorApplication>(update_query)
                     .bind(&payload.application_info)
+                    .bind(ApplicationStatus::Rejected)
+                    .bind(ApplicationStatus::Pending)
                     .bind(&claims.id)
                     .fetch_one(pool.get_ref())
                     .await;
 
                 match updated_result {
-                    Ok(application) => {
-                    
-                        HttpResponse::Ok().json(application)
-                    }
+                    Ok(application) => HttpResponse::Ok().json(application),
                     Err(_) => {
                         HttpResponse::InternalServerError().body("Failed to update application.")
                     }

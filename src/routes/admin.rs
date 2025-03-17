@@ -1,5 +1,5 @@
 use crate::handlers::auth::Claims;
-use crate::models::all_models::{ApplicationStatus, UserRole};
+use crate::models::all_models::{ApplicationStatus, ReportStatus, ReportedType, UserRole};
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::{NaiveDateTime, Utc};
 use log::error;
@@ -118,12 +118,16 @@ pub async fn get_pending_sponsor_applications(
         JOIN 
             users u ON sa.user_id = u.user_id
         WHERE 
-            sa.status = 'pending'
+            sa.status = $1
         ORDER BY 
             sa.created_at DESC
     "#;
 
-    match sqlx::query(query).fetch_all(pool.get_ref()).await {
+    match sqlx::query(query)
+        .bind(ApplicationStatus::Pending)
+        .fetch_all(pool.get_ref())
+        .await
+    {
         Ok(rows) => {
             let applications = rows
                 .iter()
@@ -219,11 +223,12 @@ pub async fn review_sponsor_application(
     if payload.status == ApplicationStatus::Approved {
         let update_user_query = r#"
             UPDATE users
-            SET role = 'sponsor'
-            WHERE user_id = $1
+            SET role = $1
+            WHERE user_id = $2
         "#;
 
         if let Err(e) = sqlx::query(update_user_query)
+            .bind(UserRole::Sponsor)
             .bind(user_id)
             .execute(&mut *tx)
             .await
@@ -276,12 +281,16 @@ pub async fn get_pending_support_groups(
         JOIN 
             users u ON sg.admin_id = u.user_id
         WHERE 
-            sg.status = 'pending'
+            sg.status = $1
         ORDER BY 
             sg.created_at DESC
     "#;
 
-    match sqlx::query(query).fetch_all(pool.get_ref()).await {
+    match sqlx::query(query)
+        .bind(ApplicationStatus::Pending)
+        .fetch_all(pool.get_ref())
+        .await
+    {
         Ok(rows) => {
             let support_groups = rows
                 .iter()
@@ -720,12 +729,12 @@ pub async fn get_unresolved_reports(pool: web::Data<PgPool>, req: HttpRequest) -
             r.created_at,
             reporter.username as reporter_username,
             CASE 
-                WHEN r.reported_type = 'user' THEN reported.username 
+                WHEN r.reported_type = $3 THEN reported.username 
                 ELSE NULL 
             END as reported_username,
             CASE 
-                WHEN r.status = 'pending' THEN 'Medium'
-                WHEN r.status = 'resolved' THEN 'Low'
+                WHEN r.status = $1 THEN 'Medium'
+                WHEN r.status = $2 THEN 'Low'
                 ELSE 'High'
             END as severity
         FROM 
@@ -735,12 +744,18 @@ pub async fn get_unresolved_reports(pool: web::Data<PgPool>, req: HttpRequest) -
         LEFT JOIN 
             users reported ON r.reported_user_id = reported.user_id
         WHERE 
-            r.status = 'pending'
+            r.status = $1
         ORDER BY 
             r.created_at DESC
     "#;
 
-    match sqlx::query(query).fetch_all(pool.get_ref()).await {
+    match sqlx::query(query)
+        .bind(ReportStatus::Pending)
+        .bind(ReportStatus::Resolved)
+        .bind(ReportedType::User)
+        .fetch_all(pool.get_ref())
+        .await
+    {
         Ok(rows) => {
             let reports = rows
                 .iter()
@@ -811,9 +826,9 @@ pub async fn handle_report(
     "#;
 
     let status = if payload.resolved {
-        "resolved"
+        ReportStatus::Resolved
     } else {
-        "pending"
+        ReportStatus::Pending
     };
 
     match sqlx::query(query)
@@ -1195,8 +1210,8 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
     let user_counts_query = r#"
         SELECT
             COUNT(*) as total_users,
-            COUNT(CASE WHEN role = 'member' THEN 1 END) as regular_users,
-            COUNT(CASE WHEN role = 'admin' THEN 1 END) as admin_users,
+            COUNT(CASE WHEN role = $1 THEN 1 END) as regular_users,
+            COUNT(CASE WHEN role = $2 THEN 1 END) as admin_users,
             COUNT(CASE WHEN banned_until IS NOT NULL AND banned_until > NOW() THEN 1 END) as banned_users
         FROM users
     "#;
@@ -1229,8 +1244,8 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
     let report_counts_query = r#"
         SELECT
             COUNT(*) as total,
-            COUNT(CASE WHEN status = 'resolved' THEN 1 END) as resolved,
-            COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending
+            COUNT(CASE WHEN status = $1 THEN 1 END) as resolved,
+            COUNT(CASE WHEN status = $2 THEN 1 END) as pending
         FROM reports
     "#;
 
@@ -1245,20 +1260,18 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
         ORDER BY DATE_TRUNC('month', created_at)
     "#;
 
-    
-
     // Get pending sponsor applications count
     let pending_sponsor_applications_query = r#"
         SELECT COUNT(*) as count
         FROM sponsor_applications
-        WHERE status = 'pending'
+        WHERE status = $1
     "#;
 
     // Get pending support groups count
     let pending_support_groups_query = r#"
         SELECT COUNT(*) as count
         FROM support_groups
-        WHERE status = 'pending'
+        WHERE status = $1
     "#;
 
     // Get pending resources count
@@ -1270,6 +1283,8 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
 
     // Execute queries individually instead of using try_join6
     let user_counts_result = sqlx::query(user_counts_query)
+        .bind(UserRole::Member)
+        .bind(UserRole::Admin)
         .fetch_one(pool.get_ref())
         .await;
     let resource_counts_result = sqlx::query(resource_counts_query)
@@ -1279,15 +1294,19 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
         .fetch_one(pool.get_ref())
         .await;
     let report_counts_result = sqlx::query(report_counts_query)
+        .bind(ReportStatus::Resolved)
+        .bind(ReportStatus::Pending)
         .fetch_one(pool.get_ref())
         .await;
     let user_registrations_result = sqlx::query(user_registrations_query)
         .fetch_all(pool.get_ref())
         .await;
     let pending_sponsor_applications_result = sqlx::query(pending_sponsor_applications_query)
+        .bind(ApplicationStatus::Pending)
         .fetch_one(pool.get_ref())
         .await;
     let pending_support_groups_result = sqlx::query(pending_support_groups_query)
+        .bind(ApplicationStatus::Pending)
         .fetch_one(pool.get_ref())
         .await;
     let pending_resources_result = sqlx::query(pending_resources_query)
@@ -1330,7 +1349,7 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
             "message": "Failed to get admin stats"
         }));
     }
-  
+
     if let Err(e) = &pending_sponsor_applications_result {
         error!("Failed to get pending sponsor applications: {}", e);
         return HttpResponse::InternalServerError().json(json!({
@@ -1403,8 +1422,6 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
             })
         })
         .collect::<Vec<serde_json::Value>>();
-
-  
 
     // Build the complete response
     let response = json!({

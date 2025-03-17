@@ -1,6 +1,6 @@
 use crate::handlers::auth::Claims;
 use crate::handlers::matching_algo::calculate_match_score;
-use crate::models::all_models::{MatchUser, MatchingRequest, MatchingStatus};
+use crate::models::all_models::{MatchUser, MatchingRequest, MatchingStatus, UserRole};
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -37,9 +37,10 @@ pub async fn recommend_sponsors(pool: web::Data<PgPool>, req: HttpRequest) -> im
 
             let sponsor_query = "
                 SELECT user_id as id, dob, location, interests, experience, available_days, languages
-                FROM users WHERE role = 'sponsor'";
+                FROM users WHERE role = $1";
 
             let sponsors_result = sqlx::query_as::<_, MatchUser>(sponsor_query)
+                .bind(UserRole::Sponsor)
                 .fetch_all(pool.get_ref())
                 .await;
 
@@ -91,11 +92,12 @@ pub async fn request_sponsor(
         // Check if there's already a pending request
         let check_query = "
             SELECT COUNT(*) FROM matching_requests 
-            WHERE member_id = $1 AND sponsor_id = $2 AND status = 'pending'";
+            WHERE member_id = $1 AND sponsor_id = $2 AND status = $3";
 
         let count: i64 = sqlx::query_scalar(check_query)
             .bind(user_id)
             .bind(payload.sponsor_id)
+            .bind(MatchingStatus::Pending)
             .fetch_one(pool.get_ref())
             .await
             .unwrap_or(0);
@@ -138,12 +140,13 @@ pub async fn request_sponsor(
                 // Insert the matching request
                 let insert_query = "
                     INSERT INTO matching_requests (member_id, sponsor_id, status, created_at)
-                    VALUES ($1, $2, 'pending', NOW())
+                    VALUES ($1, $2, $3, NOW())
                     RETURNING matching_request_id, member_id, sponsor_id, status, created_at";
 
                 let request_result = sqlx::query_as::<_, MatchingRequest>(insert_query)
                     .bind(user_id)
                     .bind(payload.sponsor_id)
+                    .bind(MatchingStatus::Pending)
                     .fetch_one(pool.get_ref())
                     .await;
 
@@ -186,13 +189,13 @@ pub async fn check_matching_status(pool: web::Data<PgPool>, req: HttpRequest) ->
 
         // Get user role to determine which requests to show
         let role_query = "SELECT role FROM users WHERE user_id = $1";
-        let role: Option<String> = sqlx::query_scalar(role_query)
+        let role: Option<UserRole> = sqlx::query_scalar(role_query)
             .bind(user_id)
             .fetch_one(pool.get_ref())
             .await
             .unwrap_or(None);
 
-        let query = if role.as_deref() == Some("sponsor") {
+        let query = if role == Some(UserRole::Sponsor) {
             // For sponsors, show requests where they are the sponsor
             "
             SELECT mr.*, u.username, u.avatar_url

@@ -1,5 +1,5 @@
 use crate::handlers::auth::Claims;
-use crate::models::all_models::{Message, Report};
+use crate::models::all_models::{Message, Report, ReportStatus, ReportedType};
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -297,16 +297,18 @@ pub async fn report_message(
 
         // Create the report
         let insert_query = "
-            INSERT INTO reports (reporter_id, reported_id, content_id, report_type, reason, status, created_at)
-            VALUES ($1, $2, $3, 'message'::report_type, $4, 'pending'::report_status, NOW())
-            RETURNING report_id, reporter_id, reported_id, content_id, report_type, reason, status, created_at, resolved_at
+            INSERT INTO reports (reporter_id, reported_user_id, reported_item_id, reported_type, reason, status, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            RETURNING report_id, reporter_id, reported_user_id, reason, reported_type, reported_item_id, status, reviewed_by, resolved_at, created_at
         ";
 
         let report_result = sqlx::query_as::<_, Report>(insert_query)
             .bind(reporter_id)
             .bind(sender_id)
             .bind(message_id)
+            .bind(ReportedType::Message)
             .bind(&payload.reason)
+            .bind(ReportStatus::Pending)
             .fetch_one(pool.get_ref())
             .await;
 

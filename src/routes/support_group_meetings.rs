@@ -1,6 +1,8 @@
 use crate::handlers::auth::Claims;
 
-use crate::models::all_models::{GroupChat, GroupMeeting, MeetingParticipant, MeetingStatus};
+use crate::models::all_models::{
+    GroupChat, GroupMeeting, MeetingParticipant, MeetingStatus, SupportGroupStatus,
+};
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -29,10 +31,11 @@ pub async fn create_support_group_meeting(
         // Ensure the support group exists and is approved, and get its group_chat_id.
         let sg_query = "
             SELECT group_chat_id FROM support_groups 
-            WHERE support_group_id = $1 AND status = 'approved'
+            WHERE support_group_id = $1 AND status = $2
         ";
         let group_chat_id: Option<Uuid> = match sqlx::query_scalar(sg_query)
             .bind(payload.support_group_id)
+            .bind(SupportGroupStatus::Approved)
             .fetch_optional(pool.get_ref())
             .await
         {
@@ -49,7 +52,7 @@ pub async fn create_support_group_meeting(
 
         let query = "
             INSERT INTO group_meetings (meeting_id, group_chat_id, host_id, title, description, scheduled_time, support_group_id, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, 'upcoming')
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING meeting_id, group_chat_id, support_group_id, host_id, title, description, scheduled_time, status, meeting_chat_id
         ";
 
@@ -62,6 +65,7 @@ pub async fn create_support_group_meeting(
             .bind(&payload.description)
             .bind(&payload.scheduled_time)
             .bind(payload.support_group_id)
+            .bind(MeetingStatus::Upcoming)
             .fetch_one(pool.get_ref())
             .await;
 
@@ -367,12 +371,13 @@ pub async fn start_meeting(
 
         // Update the meeting status to 'ongoing' and set the meeting chat.
         let update_query = "
-            UPDATE group_meetings 
-            SET status = 'ongoing', meeting_chat_id = $1 
-            WHERE meeting_id = $2
-            RETURNING *
+            UPDATE group_meetings
+            SET status = $1, meeting_chat_id = $2
+            WHERE meeting_id = $3
+            RETURNING meeting_id, group_chat_id, support_group_id, host_id, title, description, scheduled_time, status, meeting_chat_id
         ";
-        let updated_meeting: GroupMeeting = match sqlx::query_as(update_query)
+        let updated_meeting = match sqlx::query_as::<_, GroupMeeting>(update_query)
+            .bind(MeetingStatus::Ongoing)
             .bind(new_chat.group_chat_id)
             .bind(meeting_id)
             .fetch_one(&mut *tx)
@@ -489,12 +494,14 @@ pub async fn end_meeting(
 
         // Update the meeting status to 'ended'
         let update_query = "
-            UPDATE group_meetings 
-            SET status = 'ended'
-            WHERE meeting_id = $1
-            RETURNING *
+            UPDATE group_meetings
+            SET status = $1
+            WHERE meeting_id = $2
+            RETURNING meeting_id, group_chat_id, support_group_id, host_id, title, description, scheduled_time, status, meeting_chat_id
         ";
-        let updated_meeting: GroupMeeting = match sqlx::query_as(update_query)
+
+        let updated_meeting = match sqlx::query_as::<_, GroupMeeting>(update_query)
+            .bind(MeetingStatus::Ended)
             .bind(meeting_id)
             .fetch_one(&mut *tx)
             .await

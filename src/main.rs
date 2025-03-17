@@ -157,13 +157,9 @@ async fn main(
                                 .configure(config_group_chat_routes)
                                 .configure(config_resource_routes)
                                 .configure(config_report_routes)
-                                .configure(init_ws_routes),
+                                .configure(init_ws_routes)
+                                .configure(config_admin_routes),
                         ),
-                )
-                .service(
-                    web::scope("/api/admin")
-                        .wrap(AuthMiddleware)
-                        .configure(config_admin_routes),
                 )
                 .route(
                     "/",

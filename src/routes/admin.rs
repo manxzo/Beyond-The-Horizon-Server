@@ -1245,14 +1245,7 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
         ORDER BY DATE_TRUNC('month', created_at)
     "#;
 
-    // Get support group categories
-    let support_group_categories_query = r#"
-        SELECT
-            COALESCE(jsonb_extract_path_text(sg.description::jsonb, 'category'), 'Other') as category,
-            COUNT(*) as count
-        FROM support_groups sg
-        GROUP BY category
-    "#;
+    
 
     // Get pending sponsor applications count
     let pending_sponsor_applications_query = r#"
@@ -1289,9 +1282,6 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
         .fetch_one(pool.get_ref())
         .await;
     let user_registrations_result = sqlx::query(user_registrations_query)
-        .fetch_all(pool.get_ref())
-        .await;
-    let support_group_categories_result = sqlx::query(support_group_categories_query)
         .fetch_all(pool.get_ref())
         .await;
     let pending_sponsor_applications_result = sqlx::query(pending_sponsor_applications_query)
@@ -1340,13 +1330,7 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
             "message": "Failed to get admin stats"
         }));
     }
-    if let Err(e) = &support_group_categories_result {
-        error!("Failed to get support group categories: {}", e);
-        return HttpResponse::InternalServerError().json(json!({
-            "success": false,
-            "message": "Failed to get admin stats"
-        }));
-    }
+  
     if let Err(e) = &pending_sponsor_applications_result {
         error!("Failed to get pending sponsor applications: {}", e);
         return HttpResponse::InternalServerError().json(json!({
@@ -1375,7 +1359,6 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
     let support_group_counts = support_group_counts_result.unwrap();
     let report_counts = report_counts_result.unwrap();
     let user_registrations = user_registrations_result.unwrap();
-    let support_group_categories = support_group_categories_result.unwrap();
     let pending_sponsor_applications = pending_sponsor_applications_result.unwrap();
     let pending_support_groups = pending_support_groups_result.unwrap();
     let pending_resources = pending_resources_result.unwrap();
@@ -1421,16 +1404,7 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
         })
         .collect::<Vec<serde_json::Value>>();
 
-    // Build support group categories array
-    let support_group_categories_arr = support_group_categories
-        .iter()
-        .map(|row| {
-            json!({
-                "category": row.get::<String, _>("category"),
-                "count": row.get::<i64, _>("count")
-            })
-        })
-        .collect::<Vec<serde_json::Value>>();
+  
 
     // Build the complete response
     let response = json!({
@@ -1439,7 +1413,6 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
         "supportGroupCounts": support_group_counts_obj,
         "reportCounts": report_counts_obj,
         "userRegistrationsByMonth": user_registrations_arr,
-        "supportGroupCategories": support_group_categories_arr,
 
         // Include the original flat structure with actual values
         "total_users": user_counts.get::<i64, _>("total_users"),

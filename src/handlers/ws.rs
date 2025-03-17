@@ -37,8 +37,7 @@ struct AuthMessage {
 struct WebSocketClientMessage {
     #[serde(rename = "type")]
     message_type: String,
-    #[serde(default)]
-    payload: Value,
+    payload: Option<Value>,
 }
 
 impl Actor for WebSocketSession {

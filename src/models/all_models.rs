@@ -42,7 +42,7 @@ pub struct User {
 
 //  SPONSOR APPLICATION
 
-#[derive(Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Eq,Display)]
+#[derive(Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, Display)]
 #[sqlx(type_name = "application_status", rename_all = "lowercase")]
 pub enum ApplicationStatus {
     Pending,
@@ -94,11 +94,21 @@ pub struct MatchingRequest {
 pub struct MatchUser {
     pub id: Uuid,
     pub dob: NaiveDate,
-    pub location: Option<Location>,
+    pub location: Option<String>,
     pub interests: Option<Vec<String>>,
     pub experience: Option<Vec<String>>,
     pub available_days: Option<Vec<String>>,
     pub languages: Option<Vec<String>>,
+}
+
+impl MatchUser {
+    pub fn parse_location(&self) -> Option<Location> {
+        if let Some(loc_str) = &self.location {
+            serde_json::from_str(loc_str).ok()
+        } else {
+            None
+        }
+    }
 }
 
 //  1-1 MESSAGES & GROUP CHATS

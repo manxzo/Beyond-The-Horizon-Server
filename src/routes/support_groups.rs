@@ -139,8 +139,8 @@ pub async fn join_support_group(
                 // If there's a group chat, add the user to it
                 if let Ok(Some(chat_id)) = group_chat_id {
                     let add_to_chat_query = "
-                        INSERT INTO group_chat_members (group_chat_id, user_id, joined_at)
-                        VALUES ($1, $2, NOW())
+                        INSERT INTO group_chat_members (group_chat_id, user_id)
+                        VALUES ($1, $2)
                         ON CONFLICT (group_chat_id, user_id) DO NOTHING
                     ";
                     let _ = sqlx::query(add_to_chat_query)

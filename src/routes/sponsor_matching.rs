@@ -4,7 +4,6 @@ use crate::models::all_models::{MatchUser, MatchingRequest, MatchingStatus, User
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -16,7 +15,14 @@ pub async fn recommend_sponsors(pool: web::Data<PgPool>, req: HttpRequest) -> im
         let user_id = claims.id;
 
         let user_query = "
-            SELECT user_id as id, dob, location, interests, experience, available_days, languages
+            SELECT 
+                user_id as id, 
+                dob, 
+                location::text as location, 
+                interests, 
+                experience, 
+                available_days, 
+                languages
             FROM users WHERE user_id = $1";
 
         let user_result = sqlx::query_as::<_, MatchUser>(user_query)
@@ -36,7 +42,14 @@ pub async fn recommend_sponsors(pool: web::Data<PgPool>, req: HttpRequest) -> im
             }
 
             let sponsor_query = "
-                SELECT user_id as id, dob, location, interests, experience, available_days, languages
+                SELECT 
+                    user_id as id, 
+                    dob, 
+                    location::text as location, 
+                    interests, 
+                    experience, 
+                    available_days, 
+                    languages
                 FROM users WHERE role = $1";
 
             let sponsors_result = sqlx::query_as::<_, MatchUser>(sponsor_query)
@@ -108,54 +121,99 @@ pub async fn request_sponsor(
 
         // Ensure user has filled required fields before requesting
         let user_query = "
-            SELECT location, interests, experience, available_days, languages
+            SELECT 
+                location IS NOT NULL as has_location, 
+                interests IS NOT NULL as has_interests, 
+                experience IS NOT NULL as has_experience, 
+                available_days IS NOT NULL as has_available_days, 
+                languages IS NOT NULL as has_languages
             FROM users WHERE user_id = $1";
 
-        let user_result: Result<
-            (
-                Option<Value>,
-                Option<Vec<String>>,
-                Option<Vec<String>>,
-                Option<Vec<String>>,
-                Option<Vec<String>>,
-            ),
-            sqlx::Error,
-        > = sqlx::query_as(user_query)
-            .bind(user_id)
-            .fetch_one(pool.get_ref())
-            .await;
+        let user_result: Result<(bool, bool, bool, bool, bool), sqlx::Error> =
+            sqlx::query_as(user_query)
+                .bind(user_id)
+                .fetch_one(pool.get_ref())
+                .await;
 
         match user_result {
-            Ok((location, interests, experience, available_days, languages)) => {
-                if location.is_none()
-                    || interests.is_none()
-                    || experience.is_none()
-                    || available_days.is_none()
-                    || languages.is_none()
+            Ok((
+                has_location,
+                has_interests,
+                has_experience,
+                has_available_days,
+                has_languages,
+            )) => {
+                if !has_location
+                    || !has_interests
+                    || !has_experience
+                    || !has_available_days
+                    || !has_languages
                 {
                     return HttpResponse::BadRequest()
                         .body("Complete your profile before requesting a sponsor.");
                 }
 
-                // Insert the matching request
-                let insert_query = "
-                    INSERT INTO matching_requests (member_id, sponsor_id, status, created_at)
-                    VALUES ($1, $2, $3, NOW())
-                    RETURNING matching_request_id, member_id, sponsor_id, status, created_at";
+                // Calculate match score before inserting the request
+                let user_query = "
+                    SELECT 
+                        user_id as id, 
+                        dob, 
+                        location::text as location, 
+                        interests, 
+                        experience, 
+                        available_days, 
+                        languages
+                    FROM users WHERE user_id = $1";
 
-                let request_result = sqlx::query_as::<_, MatchingRequest>(insert_query)
+                let member_result = sqlx::query_as::<_, MatchUser>(user_query)
                     .bind(user_id)
-                    .bind(payload.sponsor_id)
-                    .bind(MatchingStatus::Pending)
                     .fetch_one(pool.get_ref())
                     .await;
 
-                match request_result {
-                    Ok(request) => HttpResponse::Ok().json(request),
-                    Err(e) => {
-                        eprintln!("Failed to request sponsor: {:?}", e);
-                        HttpResponse::InternalServerError().body("Failed to request sponsor.")
+                let sponsor_query = "
+                    SELECT 
+                        user_id as id, 
+                        dob, 
+                        location::text as location, 
+                        interests, 
+                        experience, 
+                        available_days, 
+                        languages
+                    FROM users WHERE user_id = $1";
+
+                let sponsor_result = sqlx::query_as::<_, MatchUser>(sponsor_query)
+                    .bind(payload.sponsor_id)
+                    .fetch_one(pool.get_ref())
+                    .await;
+
+                // If we can get both users' data, calculate match score
+                if let (Ok(member), Ok(sponsor)) = (member_result, sponsor_result) {
+                    let match_score = calculate_match_score(&member, &sponsor);
+
+                    // Insert the matching request with match score
+                    let insert_query = "
+                        INSERT INTO matching_requests (member_id, sponsor_id, status, created_at, match_score)
+                        VALUES ($1, $2, $3, NOW(), $4)
+                        RETURNING matching_request_id, member_id, sponsor_id, status, created_at, match_score";
+
+                    let request_result = sqlx::query_as::<_, MatchingRequest>(insert_query)
+                        .bind(user_id)
+                        .bind(payload.sponsor_id)
+                        .bind(MatchingStatus::Pending)
+                        .bind(match_score)
+                        .fetch_one(pool.get_ref())
+                        .await;
+
+                    match request_result {
+                        Ok(request) => HttpResponse::Ok().json(request),
+                        Err(e) => {
+                            eprintln!("Failed to request sponsor: {:?}", e);
+                            HttpResponse::InternalServerError().body("Failed to request sponsor.")
+                        }
                     }
+                } else {
+                    HttpResponse::InternalServerError()
+                        .body("Failed to fetch user data for matching.")
                 }
             }
             Err(e) => {
@@ -174,7 +232,7 @@ pub struct MatchingRequestWithUserInfo {
     pub matching_request_id: Uuid,
     pub member_id: Uuid,
     pub sponsor_id: Uuid,
-    pub status: String,
+    pub status: MatchingStatus,
     pub created_at: NaiveDateTime,
     pub username: String,
     pub avatar_url: String,
@@ -268,9 +326,9 @@ pub async fn respond_to_matching_request(
         if let Some((_member_id, _member_username)) = member_info {
             let update_query = "
                 UPDATE matching_requests 
-                SET status = $1 
+                SET status = $1, updated_at = NOW() 
                 WHERE matching_request_id = $2 AND sponsor_id = $3
-                RETURNING matching_request_id, member_id, sponsor_id, status, created_at";
+                RETURNING matching_request_id, member_id, sponsor_id, status, created_at, updated_at, match_score";
 
             let new_status = if payload.accept {
                 MatchingStatus::Accepted

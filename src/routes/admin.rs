@@ -414,23 +414,23 @@ pub async fn review_support_group(
                 // Create a new group chat
                 let new_chat_id = Uuid::new_v4();
                 let create_chat_query = r#"
-                    INSERT INTO group_chats (group_chat_id, name, created_by, created_at)
-                    VALUES ($1, $2, $3, $4)
+                    INSERT INTO group_chats (group_chat_id, creator_id, created_at, flagged)
+                    VALUES ($1, $2, $3, false)
                 "#;
 
-                // Get support group title
+                // Get support group title for logging purposes
                 let get_title_query = r#"
                     SELECT title
                     FROM support_groups
                     WHERE support_group_id = $1
                 "#;
 
-                let title = match sqlx::query_scalar::<_, String>(get_title_query)
+                match sqlx::query_scalar::<_, String>(get_title_query)
                     .bind(payload.support_group_id)
                     .fetch_one(&mut *tx)
                     .await
                 {
-                    Ok(title) => title,
+                    Ok(_) => {}, // We don't need to use the title, just checking it exists
                     Err(e) => {
                         eprintln!("Failed to get support group title: {:?}", e);
                         let _ = tx.rollback().await;
@@ -438,11 +438,8 @@ pub async fn review_support_group(
                     }
                 };
 
-                let chat_name = format!("Support Group: {}", title);
-
                 if let Err(e) = sqlx::query(create_chat_query)
                     .bind(new_chat_id)
-                    .bind(&chat_name)
                     .bind(admin_id)
                     .bind(Utc::now().naive_utc())
                     .execute(&mut *tx)
@@ -455,14 +452,13 @@ pub async fn review_support_group(
 
                 // Add the admin as a member of the group chat
                 let add_member_query = r#"
-                    INSERT INTO group_chat_members (group_chat_id, user_id, joined_at)
-                    VALUES ($1, $2, $3)
+                    INSERT INTO group_chat_members (group_chat_id, user_id)
+                    VALUES ($1, $2)
                 "#;
 
                 if let Err(e) = sqlx::query(add_member_query)
                     .bind(new_chat_id)
                     .bind(admin_id)
-                    .bind(Utc::now().naive_utc())
                     .execute(&mut *tx)
                     .await
                 {
@@ -1223,8 +1219,9 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
     let user_counts_query = r#"
         SELECT
             COUNT(*) as total_users,
-            COUNT(CASE WHEN role = $1 THEN 1 END) as regular_users,
-            COUNT(CASE WHEN role = $2 THEN 1 END) as admin_users,
+            COUNT(CASE WHEN role = $1 THEN 1 END) as member_users,
+            COUNT(CASE WHEN role = $2 THEN 1 END) as sponsor_users,
+            COUNT(CASE WHEN role = $3 THEN 1 END) as admin_users,
             COUNT(CASE WHEN banned_until IS NOT NULL AND banned_until > NOW() THEN 1 END) as banned_users
         FROM users
     "#;
@@ -1297,6 +1294,7 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
     // Execute queries individually instead of using try_join6
     let user_counts_result = sqlx::query(user_counts_query)
         .bind(UserRole::Member)
+        .bind(UserRole::Sponsor)
         .bind(UserRole::Admin)
         .fetch_one(pool.get_ref())
         .await;
@@ -1398,7 +1396,8 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
     // Build user counts object
     let user_counts_obj = json!({
         "totalUsers": user_counts.get::<i64, _>("total_users"),
-        "regularUsers": user_counts.get::<i64, _>("regular_users"),
+        "memberUsers": user_counts.get::<i64, _>("member_users"),
+        "sponsorUsers": user_counts.get::<i64, _>("sponsor_users"),
         "adminUsers": user_counts.get::<i64, _>("admin_users"),
         "bannedUsers": user_counts.get::<i64, _>("banned_users")
     });
@@ -1446,7 +1445,7 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
 
         // Include the original flat structure with actual values
         "total_users": user_counts.get::<i64, _>("total_users"),
-        "total_sponsors": user_counts.get::<i64, _>("regular_users"),
+        "total_sponsors": user_counts.get::<i64, _>("sponsor_users"),
         "pending_sponsor_applications": pending_sponsor_applications.get::<i64, _>("count"),
         "pending_support_groups": pending_support_groups.get::<i64, _>("count"),
         "pending_resources": pending_resources.get::<i64, _>("count"),

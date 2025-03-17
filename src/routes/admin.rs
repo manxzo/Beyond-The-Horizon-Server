@@ -1,7 +1,8 @@
 use crate::handlers::auth::Claims;
-use crate::models::all_models::{ApplicationStatus, ReportedType, UserRole};
+use crate::models::all_models::{ApplicationStatus, UserRole};
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::{NaiveDateTime, Utc};
+use log::error;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{PgPool, Row};
@@ -82,6 +83,10 @@ fn ensure_admin(req: &HttpRequest) -> Result<(), HttpResponse> {
     } else {
         Err(HttpResponse::Unauthorized().body("Authentication required"))
     }
+}
+
+fn get_user_id_from_request(req: &HttpRequest) -> Option<Uuid> {
+    req.extensions().get::<Claims>().map(|claims| claims.id)
 }
 
 //Get Pending Sponsor Applications
@@ -705,24 +710,32 @@ pub async fn get_unresolved_reports(pool: web::Data<PgPool>, req: HttpRequest) -
     let query = r#"
         SELECT 
             r.report_id, 
-            r.reporter_id, 
-            r.reported_user_id, 
-            r.reason, 
-            r.reported_type, 
-            r.reported_item_id, 
-            r.created_at, 
-            r.resolved, 
-            r.action_taken,
-            u1.username as reporter_username,
-            u2.username as reported_username
+            r.reporter_id,
+            r.reported_user_id,
+            r.reason as description,
+            r.reported_type as report_type,
+            r.reported_item_id,
+            r.status,
+            r.reviewed_by,
+            r.created_at,
+            reporter.username as reporter_username,
+            CASE 
+                WHEN r.reported_type = 'user' THEN reported.username 
+                ELSE NULL 
+            END as reported_username,
+            CASE 
+                WHEN r.status = 'pending' THEN 'Medium'
+                WHEN r.status = 'resolved' THEN 'Low'
+                ELSE 'High'
+            END as severity
         FROM 
             reports r
         JOIN 
-            users u1 ON r.reporter_id = u1.user_id
-        JOIN 
-            users u2 ON r.reported_user_id = u2.user_id
+            users reporter ON r.reporter_id = reporter.user_id
+        LEFT JOIN 
+            users reported ON r.reported_user_id = reported.user_id
         WHERE 
-            r.resolved = false
+            r.status = 'pending'
         ORDER BY 
             r.created_at DESC
     "#;
@@ -733,26 +746,31 @@ pub async fn get_unresolved_reports(pool: web::Data<PgPool>, req: HttpRequest) -
                 .iter()
                 .map(|row| {
                     json!({
-                        "report_id": row.get::<Uuid, _>("report_id"),
-                        "reporter_id": row.get::<Uuid, _>("reporter_id"),
-                        "reporter_username": row.get::<String, _>("reporter_username"),
-                        "reported_user_id": row.get::<Uuid, _>("reported_user_id"),
-                        "reported_username": row.get::<String, _>("reported_username"),
-                        "reason": row.get::<String, _>("reason"),
-                        "reported_type": row.get::<ReportedType, _>("reported_type"),
-                        "reported_item_id": row.get::<Uuid, _>("reported_item_id"),
+                        "id": row.get::<Uuid, _>("report_id").to_string(),
+                        "reporter_id": row.get::<Uuid, _>("reporter_id").to_string(),
+                        "reported_item_id": row.get::<Uuid, _>("reported_item_id").to_string(),
+                        "description": row.get::<String, _>("description"),
+                        "report_type": row.get::<String, _>("report_type"),
+                        "status": row.get::<String, _>("status"),
                         "created_at": row.get::<NaiveDateTime, _>("created_at"),
-                        "resolved": row.get::<bool, _>("resolved"),
-                        "action_taken": row.get::<Option<String>, _>("action_taken"),
+                        "reporter_username": row.get::<Option<String>, _>("reporter_username"),
+                        "reported_username": row.get::<Option<String>, _>("reported_username"),
+                        "severity": row.get::<String, _>("severity")
                     })
                 })
-                .collect::<Vec<_>>();
+                .collect::<Vec<serde_json::Value>>();
 
-            HttpResponse::Ok().json(reports)
+            HttpResponse::Ok().json(json!({
+                "success": true,
+                "data": reports
+            }))
         }
         Err(e) => {
-            eprintln!("Database error: {:?}", e);
-            HttpResponse::InternalServerError().body("Failed to fetch reports")
+            error!("Failed to get unresolved reports: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "message": "Failed to get unresolved reports"
+            }))
         }
     }
 }
@@ -770,98 +788,73 @@ pub async fn handle_report(
         return response;
     }
 
-    // Get admin ID from claims
-    let admin_id = if let Some(claims) = req.extensions().get::<Claims>() {
-        claims.id
-    } else {
-        return HttpResponse::Unauthorized().body("Authentication required");
-    };
-
-    // Start a transaction
-    let mut tx = match pool.begin().await {
-        Ok(tx) => tx,
-        Err(e) => {
-            eprintln!("Failed to start transaction: {:?}", e);
-            return HttpResponse::InternalServerError().body("Database error");
+    let user_id = match get_user_id_from_request(&req) {
+        Some(id) => id,
+        None => {
+            return HttpResponse::Unauthorized().json(json!({
+                "success": false,
+                "message": "Unauthorized"
+            }));
         }
     };
 
-    // Get report details
-    let get_report_query = r#"
-        SELECT reporter_id, reported_user_id, reported_type, reported_item_id
-        FROM reports
-        WHERE report_id = $1
-    "#;
-
-    let report = match sqlx::query(get_report_query)
-        .bind(payload.report_id)
-        .fetch_optional(&mut *tx)
-        .await
-    {
-        Ok(Some(row)) => {
-            let reporter_id = row.get::<Uuid, _>("reporter_id");
-            let reported_user_id = row.get::<Uuid, _>("reported_user_id");
-            let reported_type = row.get::<ReportedType, _>("reported_type");
-            let reported_item_id = row.get::<Uuid, _>("reported_item_id");
-
-            (
-                reporter_id,
-                reported_user_id,
-                reported_type,
-                reported_item_id,
-            )
-        }
-        Ok(None) => {
-            let _ = tx.rollback().await;
-            return HttpResponse::NotFound().body("Report not found");
-        }
-        Err(e) => {
-            eprintln!("Failed to get report: {:?}", e);
-            let _ = tx.rollback().await;
-            return HttpResponse::InternalServerError().body("Database error");
-        }
-    };
-
-    // Rename unused variables with underscore prefix
-    let (_reporter_id, _reported_user_id, _reported_type, _reported_item_id) = report;
-
-    // Update the report status
-    let update_query = r#"
+    // Update report status
+    let query = r#"
         UPDATE reports
         SET 
-            resolved = $1, 
-            action_taken = $2,
-            resolved_by = $3,
-            resolved_at = $4
+            status = $1,
+            reviewed_by = $2,
+            resolved_at = CASE WHEN $3 THEN NOW() ELSE NULL END
         WHERE 
-            report_id = $5
+            report_id = $4
+        RETURNING report_id
     "#;
 
-    if let Err(e) = sqlx::query(update_query)
+    let status = if payload.resolved {
+        "resolved"
+    } else {
+        "pending"
+    };
+
+    match sqlx::query(query)
+        .bind(status)
+        .bind(user_id)
         .bind(payload.resolved)
-        .bind(&payload.action_taken)
-        .bind(admin_id)
-        .bind(Utc::now().naive_utc())
         .bind(payload.report_id)
-        .execute(&mut *tx)
+        .fetch_optional(pool.get_ref())
         .await
     {
-        eprintln!("Failed to update report: {:?}", e);
-        let _ = tx.rollback().await;
-        return HttpResponse::InternalServerError().body("Failed to update report");
-    }
+        Ok(Some(_)) => {
+            // Record the action taken
+            let action_query = r#"
+                INSERT INTO admin_actions (admin_id, action_type, target_id, details)
+                VALUES ($1, 'handle_report', $2, $3)
+            "#;
 
-    // Commit the transaction
-    if let Err(e) = tx.commit().await {
-        eprintln!("Failed to commit transaction: {:?}", e);
-        return HttpResponse::InternalServerError().body("Database error");
-    }
+            let _ = sqlx::query(action_query)
+                .bind(user_id)
+                .bind(payload.report_id)
+                .bind(payload.action_taken.clone())
+                .execute(pool.get_ref())
+                .await;
 
-    // Return success response
-    HttpResponse::Ok().json(AdminActionResponse {
-        success: true,
-        message: format!("Report handled successfully"),
-    })
+            HttpResponse::Ok().json(AdminActionResponse {
+                success: true,
+                message: "Report handled successfully".to_string(),
+            })
+        }
+        Ok(None) => HttpResponse::NotFound().json(json!({
+            "success": false,
+            "message": "Report not found"
+        })),
+        Err(e) => {
+            error!("Failed to handle report: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "message": "Failed to handle report"
+            }))
+        }
+    }
 }
 
 //Ban User
@@ -889,13 +882,24 @@ pub async fn ban_user(
         return HttpResponse::BadRequest().body("Reason cannot be empty");
     }
 
-    // Calculate ban expiration date if duration is provided
-    let banned_until = payload.ban_duration_days.map(|days| {
-        Utc::now()
-            .checked_add_signed(chrono::Duration::days(days as i64))
-            .unwrap_or_else(|| Utc::now())
-            .naive_utc()
-    });
+    // Calculate ban expiration date
+    // For permanent bans (when ban_duration_days is None or negative), use year 9999
+    let banned_until = match payload.ban_duration_days {
+        Some(days) if days > 0 => {
+            // Temporary ban with specific duration
+            Utc::now()
+                .checked_add_signed(chrono::Duration::days(days as i64))
+                .unwrap_or_else(|| Utc::now())
+                .naive_utc()
+        }
+        _ => {
+            // Permanent ban - use year 9999
+            NaiveDateTime::new(
+                chrono::NaiveDate::from_ymd_opt(9999, 12, 31).unwrap(),
+                chrono::NaiveTime::from_hms_opt(23, 59, 59).unwrap(),
+            )
+        }
+    };
 
     // Start a transaction
     let mut tx = match pool.begin().await {
@@ -942,7 +946,7 @@ pub async fn ban_user(
         }
     }
 
-    // Update the user's banned_until field
+    // Update the user's banned_until field with the calculated date
     let update_query = r#"
         UPDATE users
         SET banned_until = $1
@@ -950,7 +954,7 @@ pub async fn ban_user(
     "#;
 
     if let Err(e) = sqlx::query(update_query)
-        .bind(banned_until)
+        .bind(banned_until) // Always bind a date, never NULL
         .bind(payload.user_id)
         .execute(&mut *tx)
         .await
@@ -966,7 +970,8 @@ pub async fn ban_user(
         VALUES ($1, $2, $3, $4, $5, $6)
     "#;
 
-    let ban_type = if banned_until.is_some() {
+    let ban_type = if payload.ban_duration_days.is_some() && payload.ban_duration_days.unwrap() > 0
+    {
         "temporary_ban"
     } else {
         "permanent_ban"
@@ -993,11 +998,12 @@ pub async fn ban_user(
     }
 
     // Return success response
-    let ban_message = if let Some(until) = banned_until {
-        format!("User {} banned until {}", username, until)
-    } else {
-        format!("User {} banned permanently", username)
-    };
+    let ban_message =
+        if payload.ban_duration_days.is_some() && payload.ban_duration_days.unwrap() > 0 {
+            format!("User {} banned until {}", username, banned_until)
+        } else {
+            format!("User {} banned permanently", username)
+        };
 
     HttpResponse::Ok().json(AdminActionResponse {
         success: true,
@@ -1135,7 +1141,11 @@ pub async fn get_banned_users(pool: web::Data<PgPool>, req: HttpRequest) -> impl
             user_id, 
             username, 
             email, 
-            banned_until
+            banned_until,
+            CASE 
+                WHEN EXTRACT(YEAR FROM banned_until) = 9999 THEN true
+                ELSE false
+            END as is_permanent_ban
         FROM 
             users
         WHERE 
@@ -1158,6 +1168,7 @@ pub async fn get_banned_users(pool: web::Data<PgPool>, req: HttpRequest) -> impl
                         "username": row.get::<String, _>("username"),
                         "email": row.get::<String, _>("email"),
                         "banned_until": row.get::<Option<NaiveDateTime>, _>("banned_until"),
+                        "is_permanent_ban": row.get::<bool, _>("is_permanent_ban")
                     })
                 })
                 .collect::<Vec<_>>();
@@ -1180,116 +1191,269 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
         return response;
     }
 
-    // Start a transaction
-    let mut tx = match pool.begin().await {
-        Ok(tx) => tx,
-        Err(e) => {
-            eprintln!("Failed to start transaction: {:?}", e);
-            return HttpResponse::InternalServerError().body("Database error");
-        }
-    };
+    // Get user counts
+    let user_counts_query = r#"
+        SELECT
+            COUNT(*) as total_users,
+            COUNT(CASE WHEN role = 'member' THEN 1 END) as regular_users,
+            COUNT(CASE WHEN role = 'admin' THEN 1 END) as admin_users,
+            COUNT(CASE WHEN banned_until IS NOT NULL AND banned_until > NOW() THEN 1 END) as banned_users
+        FROM users
+    "#;
 
-    // Get total users count
-    let total_users_query = "SELECT COUNT(*) FROM users";
-    let total_users = match sqlx::query_scalar::<_, i64>(total_users_query)
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(count) => count,
-        Err(e) => {
-            eprintln!("Failed to get total users: {:?}", e);
-            let _ = tx.rollback().await;
-            return HttpResponse::InternalServerError().body("Database error");
-        }
-    };
+    // Get resource counts
+    let resource_counts_query = r#"
+        SELECT
+            COUNT(*) as total,
+            COUNT(CASE WHEN content ILIKE '%article%' THEN 1 END) as articles,
+            COUNT(CASE WHEN content ILIKE '%video%' THEN 1 END) as videos,
+            COUNT(CASE WHEN content ILIKE '%podcast%' THEN 1 END) as podcasts,
+            COUNT(CASE WHEN content ILIKE '%book%' THEN 1 END) as books,
+            COUNT(CASE WHEN 
+                content NOT ILIKE '%article%' AND 
+                content NOT ILIKE '%video%' AND 
+                content NOT ILIKE '%podcast%' AND 
+                content NOT ILIKE '%book%' 
+                THEN 1 END) as other
+        FROM resources
+    "#;
 
-    // Get total sponsors count
-    let total_sponsors_query = "SELECT COUNT(*) FROM users WHERE role = 'sponsor'";
-    let total_sponsors = match sqlx::query_scalar::<_, i64>(total_sponsors_query)
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(count) => count,
-        Err(e) => {
-            eprintln!("Failed to get total sponsors: {:?}", e);
-            let _ = tx.rollback().await;
-            return HttpResponse::InternalServerError().body("Database error");
-        }
-    };
+    // Get support group counts
+    let support_group_counts_query = r#"
+        SELECT
+            COUNT(*) as total
+        FROM support_groups
+    "#;
+
+    // Get report counts
+    let report_counts_query = r#"
+        SELECT
+            COUNT(*) as total,
+            COUNT(CASE WHEN status = 'resolved' THEN 1 END) as resolved,
+            COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending
+        FROM reports
+    "#;
+
+    // Get monthly user registrations (last 6 months)
+    let user_registrations_query = r#"
+        SELECT
+            TO_CHAR(DATE_TRUNC('month', created_at), 'Mon YYYY') as month,
+            COUNT(*) as count
+        FROM users
+        WHERE created_at > NOW() - INTERVAL '6 months'
+        GROUP BY DATE_TRUNC('month', created_at)
+        ORDER BY DATE_TRUNC('month', created_at)
+    "#;
+
+    // Get support group categories
+    let support_group_categories_query = r#"
+        SELECT
+            COALESCE(jsonb_extract_path_text(sg.description::jsonb, 'category'), 'Other') as category,
+            COUNT(*) as count
+        FROM support_groups sg
+        GROUP BY category
+    "#;
 
     // Get pending sponsor applications count
-    let pending_applications_query =
-        "SELECT COUNT(*) FROM sponsor_applications WHERE status = 'pending'";
-    let pending_sponsor_applications =
-        match sqlx::query_scalar::<_, i64>(pending_applications_query)
-            .fetch_one(&mut *tx)
-            .await
-        {
-            Ok(count) => count,
-            Err(e) => {
-                eprintln!("Failed to get pending applications: {:?}", e);
-                let _ = tx.rollback().await;
-                return HttpResponse::InternalServerError().body("Database error");
-            }
-        };
+    let pending_sponsor_applications_query = r#"
+        SELECT COUNT(*) as count
+        FROM sponsor_applications
+        WHERE status = 'pending'
+    "#;
 
     // Get pending support groups count
-    let pending_groups_query = "SELECT COUNT(*) FROM support_groups WHERE status = 'pending'";
-    let pending_support_groups = match sqlx::query_scalar::<_, i64>(pending_groups_query)
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(count) => count,
-        Err(e) => {
-            eprintln!("Failed to get pending support groups: {:?}", e);
-            let _ = tx.rollback().await;
-            return HttpResponse::InternalServerError().body("Database error");
-        }
-    };
+    let pending_support_groups_query = r#"
+        SELECT COUNT(*) as count
+        FROM support_groups
+        WHERE status = 'pending'
+    "#;
 
     // Get pending resources count
-    let pending_resources_query = "SELECT COUNT(*) FROM resources WHERE approved = false";
-    let pending_resources = match sqlx::query_scalar::<_, i64>(pending_resources_query)
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(count) => count,
-        Err(e) => {
-            eprintln!("Failed to get pending resources: {:?}", e);
-            let _ = tx.rollback().await;
-            return HttpResponse::InternalServerError().body("Database error");
-        }
-    };
+    let pending_resources_query = r#"
+        SELECT COUNT(*) as count
+        FROM resources
+        WHERE approved = false
+    "#;
 
-    // Get unresolved reports count
-    let unresolved_reports_query = "SELECT COUNT(*) FROM reports WHERE resolved = false";
-    let unresolved_reports = match sqlx::query_scalar::<_, i64>(unresolved_reports_query)
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(count) => count,
-        Err(e) => {
-            eprintln!("Failed to get unresolved reports: {:?}", e);
-            let _ = tx.rollback().await;
-            return HttpResponse::InternalServerError().body("Database error");
-        }
-    };
+    // Execute queries individually instead of using try_join6
+    let user_counts_result = sqlx::query(user_counts_query)
+        .fetch_one(pool.get_ref())
+        .await;
+    let resource_counts_result = sqlx::query(resource_counts_query)
+        .fetch_one(pool.get_ref())
+        .await;
+    let support_group_counts_result = sqlx::query(support_group_counts_query)
+        .fetch_one(pool.get_ref())
+        .await;
+    let report_counts_result = sqlx::query(report_counts_query)
+        .fetch_one(pool.get_ref())
+        .await;
+    let user_registrations_result = sqlx::query(user_registrations_query)
+        .fetch_all(pool.get_ref())
+        .await;
+    let support_group_categories_result = sqlx::query(support_group_categories_query)
+        .fetch_all(pool.get_ref())
+        .await;
+    let pending_sponsor_applications_result = sqlx::query(pending_sponsor_applications_query)
+        .fetch_one(pool.get_ref())
+        .await;
+    let pending_support_groups_result = sqlx::query(pending_support_groups_query)
+        .fetch_one(pool.get_ref())
+        .await;
+    let pending_resources_result = sqlx::query(pending_resources_query)
+        .fetch_one(pool.get_ref())
+        .await;
 
-    // Commit the transaction
-    if let Err(e) = tx.commit().await {
-        eprintln!("Failed to commit transaction: {:?}", e);
-        return HttpResponse::InternalServerError().body("Database error");
+    // Check if any query failed
+    if let Err(e) = &user_counts_result {
+        error!("Failed to get user counts: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "message": "Failed to get admin stats"
+        }));
+    }
+    if let Err(e) = &resource_counts_result {
+        error!("Failed to get resource counts: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "message": "Failed to get admin stats"
+        }));
+    }
+    if let Err(e) = &support_group_counts_result {
+        error!("Failed to get support group counts: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "message": "Failed to get admin stats"
+        }));
+    }
+    if let Err(e) = &report_counts_result {
+        error!("Failed to get report counts: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "message": "Failed to get admin stats"
+        }));
+    }
+    if let Err(e) = &user_registrations_result {
+        error!("Failed to get user registrations: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "message": "Failed to get admin stats"
+        }));
+    }
+    if let Err(e) = &support_group_categories_result {
+        error!("Failed to get support group categories: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "message": "Failed to get admin stats"
+        }));
+    }
+    if let Err(e) = &pending_sponsor_applications_result {
+        error!("Failed to get pending sponsor applications: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "message": "Failed to get admin stats"
+        }));
+    }
+    if let Err(e) = &pending_support_groups_result {
+        error!("Failed to get pending support groups: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "message": "Failed to get admin stats"
+        }));
+    }
+    if let Err(e) = &pending_resources_result {
+        error!("Failed to get pending resources: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "message": "Failed to get admin stats"
+        }));
     }
 
-    // Return the statistics
-    HttpResponse::Ok().json(GetAdminStatsResponse {
-        total_users,
-        total_sponsors,
-        pending_sponsor_applications,
-        pending_support_groups,
-        pending_resources,
-        unresolved_reports,
-    })
+    // Unwrap results
+    let user_counts = user_counts_result.unwrap();
+    let resource_counts = resource_counts_result.unwrap();
+    let support_group_counts = support_group_counts_result.unwrap();
+    let report_counts = report_counts_result.unwrap();
+    let user_registrations = user_registrations_result.unwrap();
+    let support_group_categories = support_group_categories_result.unwrap();
+    let pending_sponsor_applications = pending_sponsor_applications_result.unwrap();
+    let pending_support_groups = pending_support_groups_result.unwrap();
+    let pending_resources = pending_resources_result.unwrap();
+
+    // Build user counts object
+    let user_counts_obj = json!({
+        "totalUsers": user_counts.get::<i64, _>("total_users"),
+        "regularUsers": user_counts.get::<i64, _>("regular_users"),
+        "adminUsers": user_counts.get::<i64, _>("admin_users"),
+        "bannedUsers": user_counts.get::<i64, _>("banned_users")
+    });
+
+    // Build resource counts object
+    let resource_counts_obj = json!({
+        "total": resource_counts.get::<i64, _>("total"),
+        "articles": resource_counts.get::<i64, _>("articles"),
+        "videos": resource_counts.get::<i64, _>("videos"),
+        "podcasts": resource_counts.get::<i64, _>("podcasts"),
+        "books": resource_counts.get::<i64, _>("books"),
+        "other": resource_counts.get::<i64, _>("other")
+    });
+
+    // Build support group counts object
+    let support_group_counts_obj = json!({
+        "total": support_group_counts.get::<i64, _>("total")
+    });
+
+    // Build report counts object
+    let report_counts_obj = json!({
+        "total": report_counts.get::<i64, _>("total"),
+        "resolved": report_counts.get::<i64, _>("resolved"),
+        "pending": report_counts.get::<i64, _>("pending")
+    });
+
+    // Build user registrations array
+    let user_registrations_arr = user_registrations
+        .iter()
+        .map(|row| {
+            json!({
+                "month": row.get::<String, _>("month"),
+                "count": row.get::<i64, _>("count")
+            })
+        })
+        .collect::<Vec<serde_json::Value>>();
+
+    // Build support group categories array
+    let support_group_categories_arr = support_group_categories
+        .iter()
+        .map(|row| {
+            json!({
+                "category": row.get::<String, _>("category"),
+                "count": row.get::<i64, _>("count")
+            })
+        })
+        .collect::<Vec<serde_json::Value>>();
+
+    // Build the complete response
+    let response = json!({
+        "userCounts": user_counts_obj,
+        "resourceCounts": resource_counts_obj,
+        "supportGroupCounts": support_group_counts_obj,
+        "reportCounts": report_counts_obj,
+        "userRegistrationsByMonth": user_registrations_arr,
+        "supportGroupCategories": support_group_categories_arr,
+
+        // Include the original flat structure with actual values
+        "total_users": user_counts.get::<i64, _>("total_users"),
+        "total_sponsors": user_counts.get::<i64, _>("regular_users"),
+        "pending_sponsor_applications": pending_sponsor_applications.get::<i64, _>("count"),
+        "pending_support_groups": pending_support_groups.get::<i64, _>("count"),
+        "pending_resources": pending_resources.get::<i64, _>("count"),
+        "unresolved_reports": report_counts.get::<i64, _>("pending")
+    });
+
+    HttpResponse::Ok().json(json!({
+        "success": true,
+        "data": response
+    }))
 }
 
 //Config Admin Routes

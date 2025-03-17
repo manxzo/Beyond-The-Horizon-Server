@@ -1,9 +1,7 @@
 use crate::handlers::auth::Claims;
-use crate::handlers::ws;
 use crate::models::all_models::{GroupChat, GroupChatMember, GroupChatMessage};
-use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -249,26 +247,7 @@ pub async fn send_group_chat_message(
         .fetch_one(pool.get_ref())
         .await
     {
-        Ok(message) => {
-            // Send WebSocket notification to all members of the group chat
-            let members_query = "SELECT user_id FROM group_chat_members WHERE group_chat_id = $1";
-            if let Ok(members) = sqlx::query_scalar::<_, Uuid>(members_query)
-                .bind(group_chat_id)
-                .fetch_all(pool.get_ref())
-                .await
-            {
-                let ws_payload = json!({
-                    "type": "new_group_chat_message",
-                    "message": message,
-                });
-
-                for member_id in members {
-                    let _ = ws::send_to_user(&member_id, ws_payload.clone()).await;
-                }
-            }
-
-            HttpResponse::Ok().json(message)
-        }
+        Ok(message) => HttpResponse::Ok().json(message),
         Err(e) => {
             eprintln!("Error sending group chat message: {:?}", e);
             HttpResponse::InternalServerError().body("Failed to send message")
@@ -305,26 +284,7 @@ pub async fn edit_group_chat_message(
         .fetch_one(pool.get_ref())
         .await
     {
-        Ok(message) => {
-            // Send WebSocket notification to all members of the group chat
-            let members_query = "SELECT user_id FROM group_chat_members WHERE group_chat_id = $1";
-            if let Ok(members) = sqlx::query_scalar::<_, Uuid>(members_query)
-                .bind(group_chat_id)
-                .fetch_all(pool.get_ref())
-                .await
-            {
-                let ws_payload = json!({
-                    "type": "edited_group_chat_message",
-                    "message": message,
-                });
-
-                for member_id in members {
-                    let _ = ws::send_to_user(&member_id, ws_payload.clone()).await;
-                }
-            }
-
-            HttpResponse::Ok().json(message)
-        }
+        Ok(message) => HttpResponse::Ok().json(message),
         Err(e) => {
             eprintln!("Error editing group chat message: {:?}", e);
             HttpResponse::InternalServerError().body("Failed to edit message")
@@ -359,26 +319,7 @@ pub async fn delete_group_chat_message(
         .fetch_one(pool.get_ref())
         .await
     {
-        Ok(message) => {
-            // Send WebSocket notification to all members of the group chat
-            let members_query = "SELECT user_id FROM group_chat_members WHERE group_chat_id = $1";
-            if let Ok(members) = sqlx::query_scalar::<_, Uuid>(members_query)
-                .bind(group_chat_id)
-                .fetch_all(pool.get_ref())
-                .await
-            {
-                let ws_payload = json!({
-                    "type": "deleted_group_chat_message",
-                    "message": message,
-                });
-
-                for member_id in members {
-                    let _ = ws::send_to_user(&member_id, ws_payload.clone()).await;
-                }
-            }
-
-            HttpResponse::Ok().json(message)
-        }
+        Ok(message) => HttpResponse::Ok().json(message),
         Err(e) => {
             eprintln!("Error deleting group chat message: {:?}", e);
             HttpResponse::InternalServerError().body("Failed to delete message")
@@ -450,34 +391,7 @@ pub async fn add_group_chat_member(
         .fetch_one(pool.get_ref())
         .await
     {
-        Ok(member) => {
-            // Send WebSocket notification to all members of the group chat
-            let members_query = "SELECT user_id FROM group_chat_members WHERE group_chat_id = $1";
-            if let Ok(members) = sqlx::query_scalar::<_, Uuid>(members_query)
-                .bind(group_chat_id)
-                .fetch_all(pool.get_ref())
-                .await
-            {
-                let ws_payload = json!({
-                    "type": "member_added_to_group_chat",
-                    "group_chat_id": group_chat_id,
-                    "new_member_id": payload.member_id,
-                });
-
-                for member_id in members {
-                    let _ = ws::send_to_user(&member_id, ws_payload.clone()).await;
-                }
-            }
-
-            // Also notify the newly added member
-            let ws_payload = json!({
-                "type": "added_to_group_chat",
-                "group_chat_id": group_chat_id,
-            });
-            let _ = ws::send_to_user(&payload.member_id, ws_payload).await;
-
-            HttpResponse::Ok().json(member)
-        }
+        Ok(member) => HttpResponse::Ok().json(member),
         Err(e) => {
             eprintln!("Error adding member to group chat: {:?}", e);
             HttpResponse::InternalServerError().body("Failed to add member")
@@ -532,34 +446,7 @@ pub async fn remove_group_chat_member(
         .execute(pool.get_ref())
         .await
     {
-        Ok(_) => {
-            // Send WebSocket notification to all members of the group chat
-            let members_query = "SELECT user_id FROM group_chat_members WHERE group_chat_id = $1";
-            if let Ok(members) = sqlx::query_scalar::<_, Uuid>(members_query)
-                .bind(group_chat_id)
-                .fetch_all(pool.get_ref())
-                .await
-            {
-                let ws_payload = json!({
-                    "type": "member_removed_from_group_chat",
-                    "group_chat_id": group_chat_id,
-                    "removed_member_id": member_id,
-                });
-
-                for member_id in members {
-                    let _ = ws::send_to_user(&member_id, ws_payload.clone()).await;
-                }
-            }
-
-            // Also notify the removed member
-            let ws_payload = json!({
-                "type": "removed_from_group_chat",
-                "group_chat_id": group_chat_id,
-            });
-            let _ = ws::send_to_user(&member_id, ws_payload).await;
-
-            HttpResponse::Ok().body("Member removed from group chat")
-        }
+        Ok(_) => HttpResponse::Ok().body("Member removed from group chat"),
         Err(e) => {
             eprintln!("Error removing member from group chat: {:?}", e);
             HttpResponse::InternalServerError().body("Failed to remove member")
@@ -608,4 +495,3 @@ pub fn config_group_chat_routes(cfg: &mut web::ServiceConfig) {
             ),
     );
 }
-

@@ -1,10 +1,8 @@
 use crate::handlers::auth::Claims;
-use crate::handlers::ws::send_to_role;
-use crate::models::all_models::{ApplicationStatus, UserRole};
+use crate::models::all_models::ApplicationStatus;
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -71,22 +69,7 @@ pub async fn submit_sponsor_application(
 
                 match application_result {
                     Ok(application) => {
-                        // Create notification payload
-                        let notification = json!({
-                            "type": "new_sponsor_application",
-                            "data": {
-                                "application_id": application.application_id,
-                                "user_id": application.user_id,
-                                "status": application.status,
-                                "application_info": application.application_info,
-                                "created_at": application.created_at
-                            }
-                        });
-
-                        // Send notification to admin users via websocket
-                        let admin_role = UserRole::Admin;
-                        let _ = send_to_role(&admin_role, notification).await;
-
+                   
                         HttpResponse::Ok().json(application)
                     }
                     Err(_) => {
@@ -170,22 +153,7 @@ pub async fn update_sponsor_application(
 
                 match updated_result {
                     Ok(application) => {
-                        // Create notification payload
-                        let notification = json!({
-                            "type": "updated_sponsor_application",
-                            "data": {
-                                "application_id": application.application_id,
-                                "user_id": application.user_id,
-                                "status": application.status,
-                                "application_info": application.application_info,
-                                "created_at": application.created_at
-                            }
-                        });
-
-                        // Send notification to admin users via websocket
-                        let admin_role = UserRole::Admin;
-                        let _ = send_to_role(&admin_role, notification).await;
-
+                    
                         HttpResponse::Ok().json(application)
                     }
                     Err(_) => {

@@ -1,9 +1,7 @@
 use crate::handlers::auth::Claims;
-use crate::handlers::ws;
-use crate::models::all_models::{Resource, UserRole};
+use crate::models::all_models::Resource;
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -84,45 +82,7 @@ pub async fn create_resource(
             .await;
 
         match result {
-            Ok(resource) => {
-                // Send WebSocket notification to admins about new resource
-                let notification = json!({
-                    "type": "new_resource",
-                    "resource_id": resource.resource_id,
-                    "title": resource.title,
-                    "contributor_id": resource.contributor_id,
-                    "support_group_id": resource.support_group_id
-                });
-
-                // Notify admins about the new resource
-                let _ = ws::send_to_role(&UserRole::Admin, notification).await;
-
-                // If resource is associated with a support group, notify members
-                if let Some(group_id) = resource.support_group_id {
-                    // Get members of the support group
-                    let members_query = "
-                        SELECT user_id FROM support_group_members 
-                        WHERE support_group_id = $1
-                    ";
-
-                    if let Ok(members) = sqlx::query_scalar::<_, Uuid>(members_query)
-                        .bind(group_id)
-                        .fetch_all(pool.get_ref())
-                        .await
-                    {
-                        let group_notification = json!({
-                            "type": "new_group_resource",
-                            "resource_id": resource.resource_id,
-                            "title": resource.title,
-                            "support_group_id": group_id
-                        });
-
-                        let _ = ws::send_to_users(&members, group_notification).await;
-                    }
-                }
-
-                HttpResponse::Ok().json(resource)
-            }
+            Ok(resource) => HttpResponse::Ok().json(resource),
             Err(e) => {
                 eprintln!("Error creating resource: {:?}", e);
                 HttpResponse::InternalServerError().body("Failed to create resource")

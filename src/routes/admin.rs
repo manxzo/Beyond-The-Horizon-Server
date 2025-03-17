@@ -1,5 +1,4 @@
 use crate::handlers::auth::Claims;
-use crate::handlers::ws;
 use crate::models::all_models::{ApplicationStatus, ReportedType, UserRole};
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::{NaiveDateTime, Utc};
@@ -73,7 +72,7 @@ pub struct GetAdminStatsResponse {
 }
 
 //Ensure Admin Helper Function
-async fn ensure_admin(req: &HttpRequest) -> Result<(), HttpResponse> {
+fn ensure_admin(req: &HttpRequest) -> Result<(), HttpResponse> {
     if let Some(claims) = req.extensions().get::<Claims>() {
         if claims.role == UserRole::Admin {
             Ok(())
@@ -93,7 +92,7 @@ pub async fn get_pending_sponsor_applications(
     req: HttpRequest,
 ) -> impl Responder {
     // Check if user is admin
-    if let Err(response) = ensure_admin(&req).await {
+    if let Err(response) = ensure_admin(&req) {
         return response;
     }
 
@@ -156,7 +155,7 @@ pub async fn review_sponsor_application(
     payload: web::Json<ReviewSponsorApplicationRequest>,
 ) -> impl Responder {
     // Check if user is admin
-    if let Err(response) = ensure_admin(&req).await {
+    if let Err(response) = ensure_admin(&req) {
         return response;
     }
 
@@ -236,19 +235,6 @@ pub async fn review_sponsor_application(
         return HttpResponse::InternalServerError().body("Database error");
     }
 
-    // Send notification to the user
-    let notification = json!({
-        "type": "sponsor_application_reviewed",
-        "data": {
-            "application_id": payload.application_id,
-            "status": payload.status,
-            "admin_comments": payload.admin_comments
-        }
-    });
-
-    // Send WebSocket notification to the user
-    let _ = ws::send_to_user(&user_id, notification.clone()).await;
-
     // Return success response
     HttpResponse::Ok().json(AdminActionResponse {
         success: true,
@@ -264,7 +250,7 @@ pub async fn get_pending_support_groups(
     req: HttpRequest,
 ) -> impl Responder {
     // Check if user is admin
-    if let Err(response) = ensure_admin(&req).await {
+    if let Err(response) = ensure_admin(&req) {
         return response;
     }
 
@@ -327,7 +313,7 @@ pub async fn review_support_group(
     payload: web::Json<ReviewSupportGroupRequest>,
 ) -> impl Responder {
     // Check if user is admin
-    if let Err(response) = ensure_admin(&req).await {
+    if let Err(response) = ensure_admin(&req) {
         return response;
     }
 
@@ -354,32 +340,33 @@ pub async fn review_support_group(
         }
     };
 
-    // Get the support group admin ID
-    let get_admin_query = r#"
-        SELECT admin_id
-        FROM support_groups
-        WHERE support_group_id = $1
+    // Check if the support group exists
+    let check_group_query = r#"
+        SELECT EXISTS(SELECT 1 FROM support_groups WHERE support_group_id = $1)
     "#;
 
-    let group_admin_id = match sqlx::query_scalar::<_, Uuid>(get_admin_query)
+    let group_exists = match sqlx::query_scalar::<_, bool>(check_group_query)
         .bind(payload.support_group_id)
-        .fetch_optional(&mut *tx)
+        .fetch_one(&mut *tx)
         .await
     {
-        Ok(Some(admin_id)) => admin_id,
-        Ok(None) => {
-            let _ = tx.rollback().await;
-            return HttpResponse::NotFound().body("Support group not found");
-        }
+        Ok(exists) => exists,
         Err(e) => {
-            eprintln!("Failed to get support group admin: {:?}", e);
+            eprintln!("Failed to check if support group exists: {:?}", e);
             let _ = tx.rollback().await;
             return HttpResponse::InternalServerError().body("Database error");
         }
     };
 
-    // If approved, create a group chat for the support group if it doesn't exist
+    if !group_exists {
+        let _ = tx.rollback().await;
+        return HttpResponse::NotFound().body("Support group not found");
+    }
+
+    // Variable to store group_chat_id if needed
     let mut group_chat_id = None;
+
+    // If approved, create a group chat for the support group if it doesn't exist
     if payload.status == ApplicationStatus::Approved {
         // Check if group chat already exists
         let check_chat_query = r#"
@@ -439,7 +426,7 @@ pub async fn review_support_group(
                     return HttpResponse::InternalServerError().body("Failed to create group chat");
                 }
 
-                // Add the support group admin as a member of the group chat
+                // Add the admin as a member of the group chat
                 let add_member_query = r#"
                     INSERT INTO group_chat_members (group_chat_id, user_id, joined_at)
                     VALUES ($1, $2, $3)
@@ -447,7 +434,7 @@ pub async fn review_support_group(
 
                 if let Err(e) = sqlx::query(add_member_query)
                     .bind(new_chat_id)
-                    .bind(group_admin_id)
+                    .bind(admin_id)
                     .bind(Utc::now().naive_utc())
                     .execute(&mut *tx)
                     .await
@@ -469,25 +456,55 @@ pub async fn review_support_group(
     }
 
     // Update the support group status
-    let update_query = r#"
-        UPDATE support_groups
-        SET 
-            status = $1,
-            group_chat_id = $2
-        WHERE 
-            support_group_id = $3
-    "#;
+    let update_query = if payload.status == ApplicationStatus::Approved {
+        // For approved groups, set the admin_id to the current admin
+        r#"
+            UPDATE support_groups
+            SET 
+                status = $1,
+                group_chat_id = $2,
+                admin_id = $3
+            WHERE 
+                support_group_id = $4
+        "#
+    } else {
+        // For rejected groups, just update the status
+        r#"
+            UPDATE support_groups
+            SET 
+                status = $1,
+                group_chat_id = $2
+            WHERE 
+                support_group_id = $3
+        "#
+    };
 
-    if let Err(e) = sqlx::query(update_query)
-        .bind(&payload.status)
-        .bind(group_chat_id)
-        .bind(payload.support_group_id)
-        .execute(&mut *tx)
-        .await
-    {
-        eprintln!("Failed to update support group: {:?}", e);
-        let _ = tx.rollback().await;
-        return HttpResponse::InternalServerError().body("Failed to update support group");
+    // Execute the appropriate query based on approval status
+    if payload.status == ApplicationStatus::Approved {
+        if let Err(e) = sqlx::query(update_query)
+            .bind(&payload.status)
+            .bind(group_chat_id)
+            .bind(admin_id)
+            .bind(payload.support_group_id)
+            .execute(&mut *tx)
+            .await
+        {
+            eprintln!("Failed to update support group: {:?}", e);
+            let _ = tx.rollback().await;
+            return HttpResponse::InternalServerError().body("Failed to update support group");
+        }
+    } else {
+        if let Err(e) = sqlx::query(update_query)
+            .bind(&payload.status)
+            .bind(group_chat_id)
+            .bind(payload.support_group_id)
+            .execute(&mut *tx)
+            .await
+        {
+            eprintln!("Failed to update support group: {:?}", e);
+            let _ = tx.rollback().await;
+            return HttpResponse::InternalServerError().body("Failed to update support group");
+        }
     }
 
     // Commit the transaction
@@ -495,20 +512,6 @@ pub async fn review_support_group(
         eprintln!("Failed to commit transaction: {:?}", e);
         return HttpResponse::InternalServerError().body("Database error");
     }
-
-    // Send notification to the support group admin
-    let notification = json!({
-        "type": "support_group_reviewed",
-        "data": {
-            "support_group_id": payload.support_group_id,
-            "status": payload.status,
-            "admin_comments": payload.admin_comments,
-            "group_chat_id": group_chat_id
-        }
-    });
-
-    // Send WebSocket notification to the user
-    let _ = ws::send_to_user(&group_admin_id, notification.clone()).await;
 
     // Return success response
     HttpResponse::Ok().json(AdminActionResponse {
@@ -522,7 +525,7 @@ pub async fn review_support_group(
 //Get Pending Resources Output: Vec<Resource>
 pub async fn get_pending_resources(pool: web::Data<PgPool>, req: HttpRequest) -> impl Responder {
     // Check if user is admin
-    if let Err(response) = ensure_admin(&req).await {
+    if let Err(response) = ensure_admin(&req) {
         return response;
     }
 
@@ -585,7 +588,7 @@ pub async fn review_resource(
     payload: web::Json<ReviewResourceRequest>,
 ) -> impl Responder {
     // Check if user is admin
-    if let Err(response) = ensure_admin(&req).await {
+    if let Err(response) = ensure_admin(&req) {
         return response;
     }
 
@@ -612,7 +615,7 @@ pub async fn review_resource(
         WHERE resource_id = $1
     "#;
 
-    let contributor_id = match sqlx::query_scalar::<_, Uuid>(get_contributor_query)
+    let _contributor_id = match sqlx::query_scalar::<_, Uuid>(get_contributor_query)
         .bind(payload.resource_id)
         .fetch_optional(&mut *tx)
         .await
@@ -637,7 +640,7 @@ pub async fn review_resource(
         RETURNING title
     "#;
 
-    let resource_title = match sqlx::query_scalar::<_, String>(update_query)
+    let _resource_title = match sqlx::query_scalar::<_, String>(update_query)
         .bind(payload.approved)
         .bind(payload.resource_id)
         .fetch_one(&mut *tx)
@@ -677,20 +680,6 @@ pub async fn review_resource(
         return HttpResponse::InternalServerError().body("Database error");
     }
 
-    // Send notification to the resource contributor
-    let notification = json!({
-        "type": "resource_reviewed",
-        "data": {
-            "resource_id": payload.resource_id,
-            "resource_title": resource_title,
-            "approved": payload.approved,
-            "admin_comments": payload.admin_comments
-        }
-    });
-
-    // Send WebSocket notification to the user
-    let _ = ws::send_to_user(&contributor_id, notification.clone()).await;
-
     // Return success response
     let status_text = if payload.approved {
         "approved"
@@ -708,7 +697,7 @@ pub async fn review_resource(
 //Get Unresolved Reports Output: Vec<Report>
 pub async fn get_unresolved_reports(pool: web::Data<PgPool>, req: HttpRequest) -> impl Responder {
     // Check if user is admin
-    if let Err(response) = ensure_admin(&req).await {
+    if let Err(response) = ensure_admin(&req) {
         return response;
     }
 
@@ -777,7 +766,7 @@ pub async fn handle_report(
     payload: web::Json<HandleReportRequest>,
 ) -> impl Responder {
     // Check if user is admin
-    if let Err(response) = ensure_admin(&req).await {
+    if let Err(response) = ensure_admin(&req) {
         return response;
     }
 
@@ -833,6 +822,9 @@ pub async fn handle_report(
         }
     };
 
+    // Rename unused variables with underscore prefix
+    let (_reporter_id, _reported_user_id, _reported_type, _reported_item_id) = report;
+
     // Update the report status
     let update_query = r#"
         UPDATE reports
@@ -865,19 +857,6 @@ pub async fn handle_report(
         return HttpResponse::InternalServerError().body("Database error");
     }
 
-    // Send notification to the reporter
-    let notification_to_reporter = json!({
-        "type": "report_handled",
-        "data": {
-            "report_id": payload.report_id,
-            "resolved": payload.resolved,
-            "action_taken": payload.action_taken
-        }
-    });
-
-    // Send WebSocket notification to the reporter
-    let _ = ws::send_to_user(&report.0, notification_to_reporter).await;
-
     // Return success response
     HttpResponse::Ok().json(AdminActionResponse {
         success: true,
@@ -894,7 +873,7 @@ pub async fn ban_user(
     payload: web::Json<BanUserRequest>,
 ) -> impl Responder {
     // Check if user is admin
-    if let Err(response) = ensure_admin(&req).await {
+    if let Err(response) = ensure_admin(&req) {
         return response;
     }
 
@@ -1013,19 +992,6 @@ pub async fn ban_user(
         return HttpResponse::InternalServerError().body("Database error");
     }
 
-    // Send notification to the banned user
-    let notification = json!({
-        "type": "user_banned",
-        "data": {
-            "banned_until": banned_until,
-            "reason": payload.reason,
-            "ban_type": ban_type
-        }
-    });
-
-    // Send WebSocket notification to the user
-    let _ = ws::send_to_user(&payload.user_id, notification).await;
-
     // Return success response
     let ban_message = if let Some(until) = banned_until {
         format!("User {} banned until {}", username, until)
@@ -1048,7 +1014,7 @@ pub async fn unban_user(
     payload: web::Json<UnbanUserRequest>,
 ) -> impl Responder {
     // Check if user is admin
-    if let Err(response) = ensure_admin(&req).await {
+    if let Err(response) = ensure_admin(&req) {
         return response;
     }
 
@@ -1147,17 +1113,6 @@ pub async fn unban_user(
         return HttpResponse::InternalServerError().body("Database error");
     }
 
-    // Send notification to the unbanned user
-    let notification = json!({
-        "type": "user_unbanned",
-        "data": {
-            "message": "Your account has been unbanned"
-        }
-    });
-
-    // Send WebSocket notification to the user
-    let _ = ws::send_to_user(&payload.user_id, notification).await;
-
     // Return success response
     HttpResponse::Ok().json(AdminActionResponse {
         success: true,
@@ -1170,7 +1125,7 @@ pub async fn unban_user(
 //Get Banned Users Output: Vec<User>
 pub async fn get_banned_users(pool: web::Data<PgPool>, req: HttpRequest) -> impl Responder {
     // Check if user is admin
-    if let Err(response) = ensure_admin(&req).await {
+    if let Err(response) = ensure_admin(&req) {
         return response;
     }
 
@@ -1221,7 +1176,7 @@ pub async fn get_banned_users(pool: web::Data<PgPool>, req: HttpRequest) -> impl
 //Get Admin Stats Output: GetAdminStatsResponse
 pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl Responder {
     // Check if user is admin
-    if let Err(response) = ensure_admin(&req).await {
+    if let Err(response) = ensure_admin(&req) {
         return response;
     }
 

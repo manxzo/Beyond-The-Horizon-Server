@@ -1,7 +1,6 @@
 use crate::handlers::auth::Claims;
-use crate::handlers::ws;
 use crate::models::all_models::{Comment, Post, PostLike};
-use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{PgPool, Row};
@@ -48,26 +47,7 @@ pub async fn create_post(
             .fetch_one(pool.get_ref())
             .await;
         match result {
-            Ok(post) => {
-                // Send WebSocket notification
-                let ws_payload = json!({
-                    "type": "new_post",
-                    "post": post
-                });
-
-                // Get followers of the author to notify them
-                let followers_query =
-                    "SELECT follower_id FROM user_followers WHERE followed_id = $1";
-                if let Ok(followers) = sqlx::query_scalar::<_, Uuid>(followers_query)
-                    .bind(author_id)
-                    .fetch_all(pool.get_ref())
-                    .await
-                {
-                    let _ = ws::send_to_users(&followers, ws_payload).await;
-                }
-
-                HttpResponse::Ok().json(post)
-            }
+            Ok(post) => HttpResponse::Ok().json(post),
             Err(e) => {
                 eprintln!("Error creating post: {:?}", e);
                 HttpResponse::InternalServerError().body("Failed to create post")
@@ -388,29 +368,7 @@ pub async fn update_post(
             .fetch_one(pool.get_ref())
             .await;
         match result {
-            Ok(post) => {
-                // Send WebSocket notification
-                let ws_payload = json!({
-                    "type": "updated_post",
-                    "post": post
-                });
-
-                // Get users who have liked or commented on this post
-                let interested_users_query = "
-                    SELECT DISTINCT user_id FROM post_likes WHERE post_id = $1
-                    UNION
-                    SELECT DISTINCT author_id FROM comments WHERE post_id = $1
-                ";
-                if let Ok(users) = sqlx::query_scalar::<_, Uuid>(interested_users_query)
-                    .bind(post_id)
-                    .fetch_all(pool.get_ref())
-                    .await
-                {
-                    let _ = ws::send_to_users(&users, ws_payload).await;
-                }
-
-                HttpResponse::Ok().json(post)
-            }
+            Ok(post) => HttpResponse::Ok().json(post),
             Err(e) => {
                 eprintln!("Error updating post: {:?}", e);
                 HttpResponse::InternalServerError().body("Failed to update post")
@@ -432,35 +390,6 @@ pub async fn delete_post(
     if let Some(claims) = req.extensions().get::<Claims>() {
         let post_id = path.into_inner();
         let author_id = claims.id;
-
-        // First get the post details for the notification
-        let get_post_query = "
-            SELECT post_id, author_id, content, created_at, tags
-            FROM posts WHERE post_id = $1 AND author_id = $2
-        ";
-        let post_result = sqlx::query_as::<_, Post>(get_post_query)
-            .bind(post_id)
-            .bind(author_id)
-            .fetch_optional(pool.get_ref())
-            .await;
-
-        // Get users who have liked or commented on this post before deleting
-        let interested_users = if let Ok(Some(_)) = post_result {
-            let interested_users_query = "
-                SELECT DISTINCT user_id FROM post_likes WHERE post_id = $1
-                UNION
-                SELECT DISTINCT author_id FROM comments WHERE post_id = $1
-            ";
-            sqlx::query_scalar::<_, Uuid>(interested_users_query)
-                .bind(post_id)
-                .fetch_all(pool.get_ref())
-                .await
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        // Now delete the post
         let query = "DELETE FROM posts WHERE post_id = $1 AND author_id = $2";
         let result = sqlx::query(query)
             .bind(post_id)
@@ -471,16 +400,6 @@ pub async fn delete_post(
         match result {
             Ok(res) => {
                 if res.rows_affected() > 0 {
-                    // Send WebSocket notification
-                    let ws_payload = json!({
-                        "type": "deleted_post",
-                        "post_id": post_id
-                    });
-
-                    if !interested_users.is_empty() {
-                        let _ = ws::send_to_users(&interested_users, ws_payload).await;
-                    }
-
                     HttpResponse::Ok().body("Post deleted successfully")
                 } else {
                     HttpResponse::NotFound().body("Post not found or not authorized")
@@ -541,32 +460,6 @@ pub async fn toggle_post_like(
             match result {
                 Ok(res) => {
                     if res.rows_affected() > 0 {
-                        // Get the post author to notify them
-                        let author_query = "SELECT author_id FROM posts WHERE post_id = $1";
-                        if let Ok(author_id) = sqlx::query_scalar::<_, Uuid>(author_query)
-                            .bind(payload.post_id)
-                            .fetch_one(pool.get_ref())
-                            .await
-                        {
-                            // Get username of the person who unliked the post
-                            let username_query = "SELECT username FROM users WHERE user_id = $1";
-                            if let Ok(username) = sqlx::query_scalar::<_, String>(username_query)
-                                .bind(user_id)
-                                .fetch_one(pool.get_ref())
-                                .await
-                            {
-                                // Send notification to post author
-                                let ws_payload = json!({
-                                    "type": "post_unliked",
-                                    "post_id": payload.post_id,
-                                    "user_id": user_id,
-                                    "username": username
-                                });
-
-                                let _ = ws::send_to_user(&author_id, ws_payload).await;
-                            }
-                        }
-
                         HttpResponse::Ok().json(json!({
                             "action": "unliked",
                             "post_id": payload.post_id
@@ -594,38 +487,10 @@ pub async fn toggle_post_like(
                 .await;
 
             match result {
-                Ok(like) => {
-                    // Get the post author to notify them
-                    let author_query = "SELECT author_id FROM posts WHERE post_id = $1";
-                    if let Ok(author_id) = sqlx::query_scalar::<_, Uuid>(author_query)
-                        .bind(payload.post_id)
-                        .fetch_one(pool.get_ref())
-                        .await
-                    {
-                        // Get username of the person who liked the post
-                        let username_query = "SELECT username FROM users WHERE user_id = $1";
-                        if let Ok(username) = sqlx::query_scalar::<_, String>(username_query)
-                            .bind(user_id)
-                            .fetch_one(pool.get_ref())
-                            .await
-                        {
-                            // Send notification to post author
-                            let ws_payload = json!({
-                                "type": "post_liked",
-                                "post_id": payload.post_id,
-                                "user_id": user_id,
-                                "username": username
-                            });
-
-                            let _ = ws::send_to_user(&author_id, ws_payload).await;
-                        }
-                    }
-
-                    HttpResponse::Ok().json(json!({
+                Ok(like) => HttpResponse::Ok().json(json!({
                         "action": "liked",
                         "like": like
-                    }))
-                }
+                })),
                 Err(e) => {
                     eprintln!("Error liking post: {:?}", e);
                     HttpResponse::InternalServerError().body("Failed to like post")
@@ -670,60 +535,7 @@ pub async fn create_comment(
             .fetch_one(pool.get_ref())
             .await;
         match result {
-            Ok(comment) => {
-                // Determine who to notify
-                let mut users_to_notify = Vec::new();
-
-                // 1. Notify post author
-                let post_author_query = "SELECT author_id FROM posts WHERE post_id = $1";
-                if let Ok(post_author_id) = sqlx::query_scalar::<_, Uuid>(post_author_query)
-                    .bind(payload.post_id)
-                    .fetch_one(pool.get_ref())
-                    .await
-                {
-                    if post_author_id != author_id {
-                        users_to_notify.push(post_author_id);
-                    }
-                }
-
-                // 2. If this is a reply, notify parent comment author
-                if let Some(parent_id) = payload.parent_comment_id {
-                    let parent_author_query =
-                        "SELECT author_id FROM comments WHERE comment_id = $1";
-                    if let Ok(parent_author_id) = sqlx::query_scalar::<_, Uuid>(parent_author_query)
-                        .bind(parent_id)
-                        .fetch_one(pool.get_ref())
-                        .await
-                    {
-                        if parent_author_id != author_id
-                            && !users_to_notify.contains(&parent_author_id)
-                        {
-                            users_to_notify.push(parent_author_id);
-                        }
-                    }
-                }
-
-                // Get commenter's username
-                let username_query = "SELECT username FROM users WHERE user_id = $1";
-                if let Ok(username) = sqlx::query_scalar::<_, String>(username_query)
-                    .bind(author_id)
-                    .fetch_one(pool.get_ref())
-                    .await
-                {
-                    // Send notifications
-                    let ws_payload = json!({
-                        "type": "new_comment",
-                        "comment": comment,
-                        "username": username
-                    });
-
-                    for user_id in users_to_notify {
-                        let _ = ws::send_to_user(&user_id, ws_payload.clone()).await;
-                    }
-                }
-
-                HttpResponse::Ok().json(comment)
-            }
+            Ok(comment) => HttpResponse::Ok().json(comment),
             Err(e) => {
                 eprintln!("Error creating comment: {:?}", e);
                 HttpResponse::InternalServerError().body("Failed to create comment")
@@ -765,36 +577,7 @@ pub async fn update_comment(
             .fetch_one(pool.get_ref())
             .await;
         match result {
-            Ok(comment) => {
-                // Get post author to notify them
-                let post_author_query = "SELECT author_id FROM posts WHERE post_id = $1";
-                if let Ok(post_author_id) = sqlx::query_scalar::<_, Uuid>(post_author_query)
-                    .bind(comment.post_id)
-                    .fetch_one(pool.get_ref())
-                    .await
-                {
-                    if post_author_id != author_id {
-                        // Get commenter's username
-                        let username_query = "SELECT username FROM users WHERE user_id = $1";
-                        if let Ok(username) = sqlx::query_scalar::<_, String>(username_query)
-                            .bind(author_id)
-                            .fetch_one(pool.get_ref())
-                            .await
-                        {
-                            // Send notification
-                            let ws_payload = json!({
-                                "type": "updated_comment",
-                                "comment": comment,
-                                "username": username
-                            });
-
-                            let _ = ws::send_to_user(&post_author_id, ws_payload).await;
-                        }
-                    }
-                }
-
-                HttpResponse::Ok().json(comment)
-            }
+            Ok(comment) => HttpResponse::Ok().json(comment),
             Err(e) => {
                 eprintln!("Error updating comment: {:?}", e);
                 HttpResponse::InternalServerError().body("Failed to update comment")
@@ -817,24 +600,6 @@ pub async fn delete_comment(
         let comment_id = path.into_inner();
         let author_id = claims.id;
 
-        // First get the comment details for notification
-        let get_comment_query = "
-            SELECT comment_id, post_id, author_id, content, created_at, parent_comment_id
-            FROM comments WHERE comment_id = $1 AND author_id = $2
-        ";
-        let comment_result = sqlx::query_as::<_, Comment>(get_comment_query)
-            .bind(comment_id)
-            .bind(author_id)
-            .fetch_optional(pool.get_ref())
-            .await;
-
-        // Store post_id for notification
-        let post_id = if let Ok(Some(comment)) = &comment_result {
-            Some(comment.post_id)
-        } else {
-            None
-        };
-
         // Now delete the comment
         let query = "DELETE FROM comments WHERE comment_id = $1 AND author_id = $2";
         let result = sqlx::query(query)
@@ -846,38 +611,6 @@ pub async fn delete_comment(
         match result {
             Ok(res) => {
                 if res.rows_affected() > 0 {
-                    // If we have the post_id, notify the post author
-                    if let Some(post_id) = post_id {
-                        let post_author_query = "SELECT author_id FROM posts WHERE post_id = $1";
-                        if let Ok(post_author_id) = sqlx::query_scalar::<_, Uuid>(post_author_query)
-                            .bind(post_id)
-                            .fetch_one(pool.get_ref())
-                            .await
-                        {
-                            if post_author_id != author_id {
-                                // Get commenter's username
-                                let username_query =
-                                    "SELECT username FROM users WHERE user_id = $1";
-                                if let Ok(username) =
-                                    sqlx::query_scalar::<_, String>(username_query)
-                                        .bind(author_id)
-                                        .fetch_one(pool.get_ref())
-                                        .await
-                                {
-                                    // Send notification
-                                    let ws_payload = json!({
-                                        "type": "deleted_comment",
-                                        "comment_id": comment_id,
-                                        "post_id": post_id,
-                                        "username": username
-                                    });
-
-                                    let _ = ws::send_to_user(&post_author_id, ws_payload).await;
-                                }
-                            }
-                        }
-                    }
-
                     HttpResponse::Ok().body("Comment deleted successfully")
                 } else {
                     HttpResponse::NotFound().body("Comment not found or not authorized")

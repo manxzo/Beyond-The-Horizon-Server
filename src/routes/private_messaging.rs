@@ -1,9 +1,7 @@
 use crate::handlers::auth::Claims;
-use crate::handlers::ws;
-use crate::models::all_models::{Message, Report, UserRole};
-use actix_web::{HttpMessage, HttpRequest, HttpResponse, Responder, web};
+use crate::models::all_models::{Message, Report};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -52,15 +50,7 @@ pub async fn send_message(
             .await;
 
         match message_result {
-            Ok(message) => {
-                // ws-notification
-                let ws_payload = json!({
-                    "type": "new_message",
-                    "message": message,
-                });
-                let _ = ws::send_to_user(&receiver_id, ws_payload).await;
-                HttpResponse::Ok().json(message)
-            }
+            Ok(message) => HttpResponse::Ok().json(message),
             Err(e) => {
                 eprintln!("Error inserting message: {:?}", e);
                 HttpResponse::InternalServerError().body("Failed to send message")
@@ -184,15 +174,7 @@ pub async fn mark_message_seen(
             .fetch_one(pool.get_ref())
             .await;
         match result {
-            Ok(message) => {
-                // ws-notification
-                let ws_payload = json!({
-                    "type": "seen_message",
-                    "message": message,
-                });
-                let _ = ws::send_to_user(&message.sender_id, ws_payload).await;
-                HttpResponse::Ok().json(message)
-            }
+            Ok(message) => HttpResponse::Ok().json(message),
             Err(e) => {
                 eprintln!("Error marking message as seen: {:?}", e);
                 HttpResponse::InternalServerError().body("Failed to mark as seen")
@@ -234,15 +216,7 @@ pub async fn edit_message(
             .fetch_one(pool.get_ref())
             .await;
         match result {
-            Ok(message) => {
-                // ws-notification
-                let ws_payload = json!({
-                    "type": "edited_message",
-                    "message": message,
-                });
-                let _ = ws::send_to_user(&message.receiver_id, ws_payload).await;
-                HttpResponse::Ok().json(message)
-            }
+            Ok(message) => HttpResponse::Ok().json(message),
             Err(e) => {
                 eprintln!("Error editing message: {:?}", e);
                 HttpResponse::InternalServerError().body("Failed to edit message")
@@ -276,15 +250,7 @@ pub async fn delete_message(
             .fetch_one(pool.get_ref())
             .await;
         match result {
-            Ok(message) => {
-                // ws-notification
-                let ws_payload = json!({
-                    "type": "deleted_message",
-                    "message": message,
-                });
-                let _ = ws::send_to_user(&message.receiver_id, ws_payload).await;
-                HttpResponse::Ok().json(message)
-            }
+            Ok(message) => HttpResponse::Ok().json(message),
             Err(e) => {
                 eprintln!("Error deleting message: {:?}", e);
                 HttpResponse::InternalServerError().body("Failed to delete message")
@@ -345,14 +311,7 @@ pub async fn report_message(
             .await;
 
         match report_result {
-            Ok(report) => {
-                let ws_payload = json!({
-                    "type": "new_report",
-                    "report": report,
-                });
-                let _ = ws::send_to_role(&UserRole::Admin, ws_payload).await;
-                HttpResponse::Ok().json(report)
-            }
+            Ok(report) => HttpResponse::Ok().json(report),
             Err(e) => {
                 eprintln!("Error creating report: {:?}", e);
                 HttpResponse::InternalServerError().body("Failed to create report")

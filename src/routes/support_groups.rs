@@ -1,12 +1,11 @@
 use crate::handlers::auth::Claims;
-use crate::handlers::ws;
+
 use crate::models::all_models::{
-    GroupChat, GroupMeeting, SupportGroup, SupportGroupMember, UserRole,
+    GroupChat, GroupMeeting, SupportGroup, SupportGroupMember,
 };
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sqlx::prelude::FromRow;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -38,15 +37,7 @@ pub async fn suggest_support_group(
             .fetch_one(pool.get_ref())
             .await;
         match support_group {
-            Ok(sg) => {
-                // Optionally, notify admins about the new suggestion.
-                let ws_payload = json!({
-                    "type": "new_support_group_suggestion",
-                    "support_group": sg,
-                });
-                let _ = ws::send_to_role(&UserRole::Admin, ws_payload).await;
-                HttpResponse::Ok().json(sg)
-            }
+            Ok(sg) => HttpResponse::Ok().json(sg),
             Err(e) => {
                 eprintln!("Error suggesting support group: {:?}", e);
                 HttpResponse::InternalServerError().body("Failed to suggest support group")
@@ -133,26 +124,28 @@ pub async fn join_support_group(
             .await;
         match membership {
             Ok(m) => {
-                // Get all current members of the group to notify them
-                let members_query = "
-                    SELECT user_id FROM support_group_members 
-                    WHERE support_group_id = $1 AND user_id != $2
+                // Get the group chat ID for this support group
+                let group_chat_query = "
+                    SELECT group_chat_id FROM support_groups 
+                    WHERE support_group_id = $1 AND group_chat_id IS NOT NULL
                 ";
-                let members = sqlx::query_scalar::<_, Uuid>(members_query)
+                let group_chat_id = sqlx::query_scalar::<_, Uuid>(group_chat_query)
                     .bind(payload.support_group_id)
-                    .bind(&user_id)
-                    .fetch_all(pool.get_ref())
+                    .fetch_optional(pool.get_ref())
                     .await;
 
-                if let Ok(members) = members {
-                    // Notify only the members of this specific support group
-                    let ws_payload = json!({
-                        "type": "joined_support_group",
-                        "support_group_id": payload.support_group_id,
-                        "user_id": user_id
-                    });
-
-                    let _ = ws::send_to_users(&members, ws_payload).await;
+                // If there's a group chat, add the user to it
+                if let Ok(Some(chat_id)) = group_chat_id {
+                    let add_to_chat_query = "
+                        INSERT INTO group_chat_members (group_chat_id, user_id, joined_at)
+                        VALUES ($1, $2, NOW())
+                        ON CONFLICT (group_chat_id, user_id) DO NOTHING
+                    ";
+                    let _ = sqlx::query(add_to_chat_query)
+                        .bind(chat_id)
+                        .bind(user_id)
+                        .execute(pool.get_ref())
+                        .await;
                 }
 
                 HttpResponse::Ok().json(m)
@@ -180,16 +173,28 @@ pub async fn leave_support_group(
         let user_id = &claims.id;
         let support_group_id = path.into_inner();
 
-        // Get all current members of the group before removing the user
-        let members_query = "
-            SELECT user_id FROM support_group_members 
-            WHERE support_group_id = $1 AND user_id != $2
+        // Get the group chat ID for this support group
+        let group_chat_query = "
+            SELECT group_chat_id FROM support_groups 
+            WHERE support_group_id = $1 AND group_chat_id IS NOT NULL
         ";
-        let members = sqlx::query_scalar::<_, Uuid>(members_query)
+        let group_chat_id = sqlx::query_scalar::<_, Uuid>(group_chat_query)
             .bind(support_group_id)
-            .bind(user_id)
-            .fetch_all(pool.get_ref())
+            .fetch_optional(pool.get_ref())
             .await;
+
+        // If there's a group chat, remove the user from it
+        if let Ok(Some(chat_id)) = group_chat_id {
+            let remove_from_chat_query = "
+                DELETE FROM group_chat_members 
+                WHERE group_chat_id = $1 AND user_id = $2
+            ";
+            let _ = sqlx::query(remove_from_chat_query)
+                .bind(chat_id)
+                .bind(user_id)
+                .execute(pool.get_ref())
+                .await;
+        }
 
         // Delete the membership record from support_group_members.
         let result = sqlx::query(
@@ -202,16 +207,8 @@ pub async fn leave_support_group(
 
         match result {
             Ok(_) => {
-                // Send a WebSocket update to notify only the members of this specific group
-                if let Ok(members) = members {
-                    let ws_payload = json!({
-                        "type": "left_support_group",
-                        "support_group_id": support_group_id,
-                        "user_id": user_id,
-                    });
-
-                    let _ = ws::send_to_users(&members, ws_payload).await;
-                }
+                // We don't need to do anything with the members list anymore
+                // since we're not sending WebSocket notifications
 
                 HttpResponse::Ok().body("Successfully left the support group")
             }

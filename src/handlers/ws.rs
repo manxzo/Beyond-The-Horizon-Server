@@ -12,7 +12,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+/// How often heartbeat pings are sent
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// How long before lack of client response causes a timeout
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// WebSocket session struct
 struct WebSocketSession {
@@ -20,6 +26,9 @@ struct WebSocketSession {
     role: Option<UserRole>,
     tx: Option<UnboundedSender<ws::Message>>,
     authenticated: bool,
+    /// Client must send ping at least once per 60 seconds (CLIENT_TIMEOUT),
+    /// otherwise we drop connection.
+    hb: Instant,
 }
 
 /// Shared map of active WebSocket connections.
@@ -44,6 +53,10 @@ impl Actor for WebSocketSession {
     type Context = ws::WebsocketContext<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
+        // Start heartbeat process
+        self.hb = Instant::now();
+        self.heartbeat(ctx);
+
         if self.authenticated {
             if let (Some(user_id), Some(role)) = (self.user_id, self.role) {
                 info!(
@@ -95,11 +108,32 @@ impl Actor for WebSocketSession {
     }
 }
 
+impl WebSocketSession {
+    /// Helper method that sends ping to client every 30 seconds (HEARTBEAT_INTERVAL).
+    /// Also checks if client has been responsive.
+    fn heartbeat(&self, ctx: &mut ws::WebsocketContext<Self>) {
+        ctx.run_interval(HEARTBEAT_INTERVAL, |act, ctx| {
+            // Check client heartbeats
+            if Instant::now().duration_since(act.hb) > CLIENT_TIMEOUT {
+                // Heartbeat timed out
+                warn!("WebSocket Client heartbeat failed, disconnecting!");
+                ctx.close(None);
+                return;
+            }
+
+            ctx.ping(b"");
+        });
+    }
+}
+
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketSession {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match msg {
             Ok(ws::Message::Text(text)) => {
                 debug!("Received text message: {}", text);
+                // Update heartbeat timestamp
+                self.hb = Instant::now();
+
                 // Try to parse the message
                 match serde_json::from_str::<WebSocketClientMessage>(&text) {
                     Ok(client_message) => {
@@ -136,14 +170,17 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketSession 
                 }
             }
             Ok(ws::Message::Ping(msg)) => {
-                debug!("Ping received");
+                debug!("Ping received, updating heartbeat");
+                self.hb = Instant::now();
                 ctx.pong(&msg);
             }
             Ok(ws::Message::Pong(_)) => {
-                debug!("Pong received");
+                debug!("Pong received, updating heartbeat");
+                self.hb = Instant::now();
             }
             Ok(ws::Message::Binary(bin)) => {
                 debug!("Binary message received, length: {}", bin.len());
+                self.hb = Instant::now();
             }
             Ok(ws::Message::Close(reason)) => {
                 info!("Close message received: {:?}", reason);
@@ -151,6 +188,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketSession 
             }
             Ok(ws::Message::Continuation(_)) => {
                 debug!("Continuation message received");
+                self.hb = Instant::now();
             }
             Ok(ws::Message::Nop) => {
                 debug!("Nop message received");
@@ -191,6 +229,7 @@ pub async fn ws_connect(req: HttpRequest, stream: web::Payload) -> Result<HttpRe
             role: Some(role),
             tx: None,
             authenticated: true,
+            hb: Instant::now(),
         };
 
         // Start the WebSocket connection
@@ -226,6 +265,7 @@ pub async fn ws_connect(req: HttpRequest, stream: web::Payload) -> Result<HttpRe
                                 role: Some(role),
                                 tx: None,
                                 authenticated: true,
+                                hb: Instant::now(),
                             };
 
                             // Start the WebSocket connection
@@ -250,6 +290,7 @@ pub async fn ws_connect(req: HttpRequest, stream: web::Payload) -> Result<HttpRe
         role: None,
         tx: None,
         authenticated: false,
+        hb: Instant::now(),
     };
 
     // Start the WebSocket connection

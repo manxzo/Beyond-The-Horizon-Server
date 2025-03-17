@@ -1,6 +1,5 @@
 use crate::handlers::auth::Claims;
 use crate::handlers::matching_algo::calculate_match_score;
-use crate::handlers::ws::send_to_user;
 use crate::models::all_models::{MatchUser, MatchingRequest, MatchingStatus};
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::NaiveDateTime;
@@ -149,17 +148,7 @@ pub async fn request_sponsor(
                     .await;
 
                 match request_result {
-                    Ok(request) => {
-                        // Send notification to sponsor via websocket
-                        let message = serde_json::json!({
-                            "type": "sponsor_request",
-                            "message": format!("You have a new sponsorship request from user {}", claims.username)
-                        });
-
-                        let _ = send_to_user(&payload.sponsor_id, message).await;
-
-                        HttpResponse::Ok().json(request)
-                    }
+                    Ok(request) => HttpResponse::Ok().json(request),
                     Err(e) => {
                         eprintln!("Failed to request sponsor: {:?}", e);
                         HttpResponse::InternalServerError().body("Failed to request sponsor.")
@@ -273,7 +262,7 @@ pub async fn respond_to_matching_request(
             .await
             .unwrap_or(None);
 
-        if let Some((member_id, _member_username)) = member_info {
+        if let Some((_member_id, _member_username)) = member_info {
             let update_query = "
                 UPDATE matching_requests 
                 SET status = $1 
@@ -287,29 +276,14 @@ pub async fn respond_to_matching_request(
             };
 
             let result = sqlx::query_as::<_, MatchingRequest>(update_query)
-                .bind(new_status.to_string())
+                .bind(new_status)
                 .bind(&payload.matching_request_id)
                 .bind(&sponsor_id)
                 .fetch_one(pool.get_ref())
                 .await;
 
             match result {
-                Ok(updated_request) => {
-                    // Send notification to member via websocket
-                    let status_text = if payload.accept {
-                        "accepted"
-                    } else {
-                        "declined"
-                    };
-                    let notification = serde_json::json!({
-                        "type": "sponsor_response",
-                        "message": format!("Your sponsorship request has been {} by {}", status_text, claims.username)
-                    });
-
-                    let _ = send_to_user(&member_id, notification).await;
-
-                    HttpResponse::Ok().json(updated_request)
-                }
+                Ok(updated_request) => HttpResponse::Ok().json(updated_request),
                 Err(e) => {
                     eprintln!("Failed to update matching request: {:?}", e);
                     HttpResponse::InternalServerError().body("Failed to update request.")

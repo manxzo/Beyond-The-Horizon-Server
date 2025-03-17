@@ -5,7 +5,9 @@ use sqlx::{Decode, FromRow};
 use strum_macros::{Display, EnumString};
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize, sqlx::Type, Display, EnumString, PartialEq,Clone,Copy)]
+#[derive(
+    Debug, Serialize, Deserialize, sqlx::Type, Display, EnumString, PartialEq, Clone, Copy,
+)]
 //  USER & AUTHENTICATION STRUCTS
 #[sqlx(type_name = "user_role", rename_all = "lowercase")]
 pub enum UserRole {
@@ -40,7 +42,7 @@ pub struct User {
 
 //  SPONSOR APPLICATION
 
-#[derive(Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Display, EnumString)]
+#[derive(Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Eq,Display)]
 #[sqlx(type_name = "application_status", rename_all = "lowercase")]
 pub enum ApplicationStatus {
     Pending,
@@ -70,7 +72,7 @@ pub struct Location {
 
 //  MATCHING REQUESTS
 
-#[derive(Debug, Serialize, Deserialize, sqlx::Type, Display, EnumString, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
 #[sqlx(type_name = "matching_status", rename_all = "lowercase")]
 pub enum MatchingStatus {
     Pending,
@@ -141,7 +143,7 @@ pub struct GroupChatMember {
 
 //  GROUP MEETINGS & PARTICIPANTS
 
-#[derive(Debug, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
 #[sqlx(type_name = "meeting_status", rename_all = "lowercase")]
 pub enum MeetingStatus {
     Upcoming,
@@ -168,7 +170,7 @@ pub struct MeetingParticipant {
     pub user_id: Uuid,
 }
 // SUPPORT GROUPS
-#[derive(Debug, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
 #[sqlx(type_name = "support_group_status", rename_all = "lowercase")]
 pub enum SupportGroupStatus {
     Pending,
@@ -209,7 +211,7 @@ pub struct Resource {
 
 //  REPORTS
 
-#[derive(Debug, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
 #[sqlx(type_name = "reported_type", rename_all = "lowercase")]
 pub enum ReportedType {
     Message,
@@ -219,7 +221,7 @@ pub enum ReportedType {
     Post,
     Comment,
 }
-#[derive(Debug, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
 #[sqlx(type_name = "report_status", rename_all = "lowercase")]
 pub enum ReportStatus {
     Pending,

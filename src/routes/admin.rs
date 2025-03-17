@@ -134,13 +134,24 @@ pub async fn get_pending_sponsor_applications(
             let applications = rows
                 .iter()
                 .map(|row| {
+                    // Parse the application_info from TEXT to JSON
+                    let application_info_str: String = row.get("application_info");
+                    let application_info = match serde_json::from_str(&application_info_str) {
+                        Ok(json) => json,
+                        Err(e) => {
+                            error!("Failed to parse application_info as JSON: {}", e);
+                            error!("Raw application_info: {}", application_info_str);
+                            serde_json::json!({})
+                        }
+                    };
+
                     json!({
                         "application_id": row.get::<Uuid, _>("application_id"),
                         "user_id": row.get::<Uuid, _>("user_id"),
                         "username": row.get::<String, _>("username"),
                         "email": row.get::<String, _>("email"),
                         "status": row.get::<ApplicationStatus, _>("status"),
-                        "application_info": row.get::<serde_json::Value, _>("application_info"),
+                        "application_info": application_info,
                         "reviewed_by": row.get::<Option<Uuid>, _>("reviewed_by"),
                         "admin_comments": row.get::<Option<String>, _>("admin_comments"),
                         "created_at": row.get::<NaiveDateTime, _>("created_at"),

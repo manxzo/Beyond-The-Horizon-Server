@@ -371,7 +371,7 @@ pub async fn start_meeting(
 
         // Update the meeting status to 'ongoing' and set the meeting chat.
         let update_query = "
-            UPDATE group_meetings
+            UPDATE group_meetings 
             SET status = $1, meeting_chat_id = $2
             WHERE meeting_id = $3
             RETURNING meeting_id, group_chat_id, support_group_id, host_id, title, description, scheduled_time, status, meeting_chat_id
@@ -494,7 +494,7 @@ pub async fn end_meeting(
 
         // Update the meeting status to 'ended'
         let update_query = "
-            UPDATE group_meetings
+            UPDATE group_meetings 
             SET status = $1
             WHERE meeting_id = $2
             RETURNING meeting_id, group_chat_id, support_group_id, host_id, title, description, scheduled_time, status, meeting_chat_id

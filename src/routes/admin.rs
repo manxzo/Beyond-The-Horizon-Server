@@ -1,5 +1,7 @@
 use crate::handlers::auth::Claims;
-use crate::models::all_models::{ApplicationStatus, ReportStatus, ReportedType, UserRole};
+use crate::models::all_models::{
+    ApplicationStatus, ReportStatus, ReportedType, SupportGroupStatus, UserRole,
+};
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::{NaiveDateTime, Utc};
 use log::error;
@@ -27,7 +29,7 @@ pub struct ReviewSponsorApplicationRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ReviewSupportGroupRequest {
     pub support_group_id: Uuid,
-    pub status: ApplicationStatus,
+    pub status: SupportGroupStatus,
     pub admin_comments: Option<String>,
 }
 
@@ -287,7 +289,7 @@ pub async fn get_pending_support_groups(
     "#;
 
     match sqlx::query(query)
-        .bind(ApplicationStatus::Pending)
+        .bind(SupportGroupStatus::Pending)
         .fetch_all(pool.get_ref())
         .await
     {
@@ -303,7 +305,7 @@ pub async fn get_pending_support_groups(
                         "admin_username": row.get::<String, _>("username"),
                         "admin_email": row.get::<String, _>("email"),
                         "group_chat_id": row.get::<Option<Uuid>, _>("group_chat_id"),
-                        "status": row.get::<ApplicationStatus, _>("status"),
+                        "status": row.get::<SupportGroupStatus, _>("status"),
                         "created_at": row.get::<NaiveDateTime, _>("created_at"),
                     })
                 })
@@ -339,8 +341,8 @@ pub async fn review_support_group(
     };
 
     // Validate input
-    if payload.status != ApplicationStatus::Approved
-        && payload.status != ApplicationStatus::Rejected
+    if payload.status != SupportGroupStatus::Approved
+        && payload.status != SupportGroupStatus::Rejected
     {
         return HttpResponse::BadRequest().body("Invalid status. Must be 'approved' or 'rejected'");
     }
@@ -381,7 +383,7 @@ pub async fn review_support_group(
     let mut group_chat_id = None;
 
     // If approved, create a group chat for the support group if it doesn't exist
-    if payload.status == ApplicationStatus::Approved {
+    if payload.status == SupportGroupStatus::Approved {
         // Check if group chat already exists
         let check_chat_query = r#"
             SELECT group_chat_id
@@ -470,7 +472,7 @@ pub async fn review_support_group(
     }
 
     // Update the support group status
-    let update_query = if payload.status == ApplicationStatus::Approved {
+    let update_query = if payload.status == SupportGroupStatus::Approved {
         // For approved groups, set the admin_id to the current admin
         r#"
             UPDATE support_groups
@@ -494,7 +496,7 @@ pub async fn review_support_group(
     };
 
     // Execute the appropriate query based on approval status
-    if payload.status == ApplicationStatus::Approved {
+    if payload.status == SupportGroupStatus::Approved {
         if let Err(e) = sqlx::query(update_query)
             .bind(&payload.status)
             .bind(group_chat_id)
@@ -530,7 +532,7 @@ pub async fn review_support_group(
     // Return success response
     HttpResponse::Ok().json(AdminActionResponse {
         success: true,
-        message: format!("Support group {} successfully", payload.status),
+        message: format!("Support group {:?} successfully", payload.status),
     })
 }
 
@@ -1306,7 +1308,7 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
         .fetch_one(pool.get_ref())
         .await;
     let pending_support_groups_result = sqlx::query(pending_support_groups_query)
-        .bind(ApplicationStatus::Pending)
+        .bind(SupportGroupStatus::Pending)
         .fetch_one(pool.get_ref())
         .await;
     let pending_resources_result = sqlx::query(pending_resources_query)

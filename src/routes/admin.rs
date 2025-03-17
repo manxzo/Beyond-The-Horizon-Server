@@ -280,7 +280,7 @@ pub async fn get_pending_support_groups(
             u.email
         FROM 
             support_groups sg
-        JOIN 
+        LEFT JOIN 
             users u ON sg.admin_id = u.user_id
         WHERE 
             sg.status = $1
@@ -301,9 +301,9 @@ pub async fn get_pending_support_groups(
                         "support_group_id": row.get::<Uuid, _>("support_group_id"),
                         "title": row.get::<String, _>("title"),
                         "description": row.get::<String, _>("description"),
-                        "admin_id": row.get::<Uuid, _>("admin_id"),
-                        "admin_username": row.get::<String, _>("username"),
-                        "admin_email": row.get::<String, _>("email"),
+                        "admin_id": row.get::<Option<Uuid>, _>("admin_id"),
+                        "admin_username": row.try_get::<String, _>("username").ok(),
+                        "admin_email": row.try_get::<String, _>("email").ok(),
                         "group_chat_id": row.get::<Option<Uuid>, _>("group_chat_id"),
                         "status": row.get::<SupportGroupStatus, _>("status"),
                         "created_at": row.get::<NaiveDateTime, _>("created_at"),

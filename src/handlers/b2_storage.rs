@@ -322,8 +322,8 @@ impl B2Client {
         // Construct the download URL
         let auth = self.authorize_account().await?;
         let download_url = format!(
-            "{}/file/{}/{}",
-            auth.download_url, upload_response.bucket_id, upload_response.file_name
+            "{}/file/BTH-User-Avatars/{}",
+            auth.download_url, upload_response.file_name
         );
 
         info!("File uploaded successfully: {}", download_url);

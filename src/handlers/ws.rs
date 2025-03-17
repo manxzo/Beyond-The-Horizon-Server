@@ -37,6 +37,7 @@ struct AuthMessage {
 struct WebSocketClientMessage {
     #[serde(rename = "type")]
     message_type: String,
+    #[serde(default)]
     payload: Value,
 }
 

@@ -133,6 +133,7 @@ pub async fn get_conversation(
         let query = "
             SELECT * FROM messages 
             WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)
+            AND deleted = false
             ORDER BY timestamp ASC
         ";
         let messages = sqlx::query_as::<_, Message>(query)

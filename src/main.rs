@@ -35,7 +35,7 @@ use routes::{
 };
 use shuttle_actix_web::ShuttleActixWeb;
 use shuttle_runtime::SecretStore;
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::postgres::PgPoolOptions;
 use std::time::Duration;
 
 #[shuttle_runtime::main]

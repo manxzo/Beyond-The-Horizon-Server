@@ -778,17 +778,22 @@ pub async fn get_unresolved_reports(pool: web::Data<PgPool>, req: HttpRequest) -
             let reports = rows
                 .iter()
                 .map(|row| {
+                    // Get enum values properly
+                    let report_type: ReportedType = row.get("report_type");
+                    let status: ReportStatus = row.get("status");
+                    
                     json!({
                         "id": row.get::<Uuid, _>("report_id").to_string(),
                         "reporter_id": row.get::<Uuid, _>("reporter_id").to_string(),
                         "reported_item_id": row.get::<Uuid, _>("reported_item_id").to_string(),
-                        "description": row.get::<String, _>("description"),
-                        "report_type": row.get::<String, _>("report_type"),
-                        "status": row.get::<String, _>("status"),
+                        "reason": row.get::<String, _>("description"),
+                        "report_type": format!("{:?}", report_type),
+                        "status": format!("{:?}", status),
                         "created_at": row.get::<NaiveDateTime, _>("created_at"),
                         "reporter_username": row.get::<Option<String>, _>("reporter_username"),
                         "reported_username": row.get::<Option<String>, _>("reported_username"),
-                        "severity": row.get::<String, _>("severity")
+                        "severity": row.get::<String, _>("severity"),
+                        "reported_user_id": row.get::<Option<Uuid>, _>("reported_user_id").map(|id| id.to_string())
                     })
                 })
                 .collect::<Vec<serde_json::Value>>();

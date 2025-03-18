@@ -2,6 +2,7 @@ use crate::handlers::auth::Claims;
 use crate::models::all_models::{Message, Report, ReportStatus, ReportedType};
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -313,7 +314,22 @@ pub async fn report_message(
             .await;
 
         match report_result {
-            Ok(report) => HttpResponse::Ok().json(report),
+            Ok(report) => {
+                // Convert the enum to string before serializing to JSON
+                let response = json!({
+                    "report_id": report.report_id,
+                    "reporter_id": report.reporter_id,
+                    "reported_user_id": report.reported_user_id,
+                    "reason": report.reason,
+                    "reported_type": format!("{:?}", report.reported_type),
+                    "reported_item_id": report.reported_item_id,
+                    "status": format!("{:?}", report.status),
+                    "reviewed_by": report.reviewed_by,
+                    "resolved_at": report.resolved_at,
+                    "created_at": report.created_at
+                });
+                HttpResponse::Ok().json(response)
+            }
             Err(e) => {
                 eprintln!("Error creating report: {:?}", e);
                 HttpResponse::InternalServerError().body("Failed to create report")

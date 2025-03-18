@@ -2,6 +2,7 @@ use crate::handlers::auth::Claims;
 use crate::models::all_models::ReportedType;
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -129,7 +130,16 @@ pub async fn create_report(
             .await;
 
         match result {
-            Ok(report_id) => HttpResponse::Created().json(report_id),
+            Ok(report_id) => {
+                let response = json!({
+                    "report_id": report_id,
+                    "reported_user_id": payload.reported_user_id,
+                    "reported_type": format!("{:?}", payload.reported_type),
+                    "reported_item_id": payload.reported_item_id,
+                    "status": "Pending"
+                });
+                HttpResponse::Created().json(response)
+            }
             Err(e) => {
                 eprintln!("Database error: {:?}", e);
                 HttpResponse::InternalServerError().body("Error creating report")

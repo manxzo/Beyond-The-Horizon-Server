@@ -3,7 +3,7 @@ use crate::models::all_models::{
     ApplicationStatus, ReportStatus, ReportedType, SupportGroupStatus, UserRole,
 };
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
-use chrono::{NaiveDateTime, Utc};
+use chrono::{NaiveDate, NaiveDateTime, Utc};
 use log::error;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -72,6 +72,15 @@ pub struct GetAdminStatsResponse {
     pub pending_support_groups: i64,
     pub pending_resources: i64,
     pub unresolved_reports: i64,
+}
+
+//Get Banned Users Query Params
+#[derive(Debug, Deserialize)]
+pub struct GetAllUsersParams {
+    pub username: Option<String>,
+    pub role: Option<UserRole>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 //Ensure Admin Helper Function
@@ -430,7 +439,7 @@ pub async fn review_support_group(
                     .fetch_one(&mut *tx)
                     .await
                 {
-                    Ok(_) => {}, // We don't need to use the title, just checking it exists
+                    Ok(_) => {} // We don't need to use the title, just checking it exists
                     Err(e) => {
                         eprintln!("Failed to get support group title: {:?}", e);
                         let _ = tx.rollback().await;
@@ -1206,6 +1215,171 @@ pub async fn get_banned_users(pool: web::Data<PgPool>, req: HttpRequest) -> impl
     }
 }
 
+//Get All Users
+//Get All Users Input: HttpRequest(JWT Token), GetAllUsersParams
+//Get All Users Output: Vec<User>
+pub async fn get_all_users(
+    pool: web::Data<PgPool>,
+    req: HttpRequest,
+    query: web::Query<GetAllUsersParams>,
+) -> impl Responder {
+    // Check if user is admin
+    if let Err(response) = ensure_admin(&req) {
+        return response;
+    }
+
+    let limit = query.limit.unwrap_or(100); // Default to 100 users per page
+    let offset = query.offset.unwrap_or(0);
+
+    // Get username from the query params for search
+    let username_pattern = query.username.as_ref().map(|u| format!("%{}%", u));
+
+    // Build the SQL query based on the parameters provided
+    let users_result = if let Some(role) = &query.role {
+        // Search with role filter
+        if let Some(username) = &username_pattern {
+            // Search by both username and role
+            sqlx::query(
+                r#"
+                SELECT 
+                    user_id, username, email, role, banned_until, avatar_url, created_at, dob, 
+                    email_verified, privacy,
+                    CASE WHEN banned_until IS NOT NULL AND banned_until > NOW() THEN true ELSE false END as is_banned
+                FROM users
+                WHERE username ILIKE $1 AND role = $2
+                ORDER BY created_at DESC
+                LIMIT $3 OFFSET $4
+                "#
+            )
+            .bind(username)
+            .bind(role)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool.get_ref())
+            .await
+        } else {
+            // Search by role only
+            sqlx::query(
+                r#"
+                SELECT 
+                    user_id, username, email, role, banned_until, avatar_url, created_at, dob, 
+                    email_verified, privacy,
+                    CASE WHEN banned_until IS NOT NULL AND banned_until > NOW() THEN true ELSE false END as is_banned
+                FROM users
+                WHERE role = $1
+                ORDER BY created_at DESC
+                LIMIT $2 OFFSET $3
+                "#
+            )
+            .bind(role)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool.get_ref())
+            .await
+        }
+    } else if let Some(username) = &username_pattern {
+        // Search by username only
+        sqlx::query(
+            r#"
+            SELECT 
+                user_id, username, email, role, banned_until, avatar_url, created_at, dob, 
+                email_verified, privacy,
+                CASE WHEN banned_until IS NOT NULL AND banned_until > NOW() THEN true ELSE false END as is_banned
+            FROM users
+            WHERE username ILIKE $1
+            ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
+            "#
+        )
+        .bind(username)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool.get_ref())
+        .await
+    } else {
+        // No filters, get all users
+        sqlx::query(
+            r#"
+            SELECT 
+                user_id, username, email, role, banned_until, avatar_url, created_at, dob, 
+                email_verified, privacy,
+                CASE WHEN banned_until IS NOT NULL AND banned_until > NOW() THEN true ELSE false END as is_banned
+            FROM users
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+            "#
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool.get_ref())
+        .await
+    };
+
+    // Get the total count with the same filters
+    let count_result = if let Some(role) = &query.role {
+        if let Some(username) = &username_pattern {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM users WHERE username ILIKE $1 AND role = $2",
+            )
+            .bind(username)
+            .bind(role)
+            .fetch_one(pool.get_ref())
+            .await
+        } else {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE role = $1")
+                .bind(role)
+                .fetch_one(pool.get_ref())
+                .await
+        }
+    } else if let Some(username) = &username_pattern {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE username ILIKE $1")
+            .bind(username)
+            .fetch_one(pool.get_ref())
+            .await
+    } else {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
+            .fetch_one(pool.get_ref())
+            .await
+    };
+
+    match (users_result, count_result) {
+        (Ok(rows), Ok(total_count)) => {
+            let users = rows
+                .iter()
+                .map(|row| {
+                    json!({
+                        "user_id": row.get::<Uuid, _>("user_id"),
+                        "username": row.get::<String, _>("username"),
+                        "email": row.get::<String, _>("email"),
+                        "role": row.get::<UserRole, _>("role"),
+                        "avatar_url": row.get::<String, _>("avatar_url"),
+                        "created_at": row.get::<NaiveDateTime, _>("created_at"),
+                        "dob": row.get::<NaiveDate, _>("dob"),
+                        "email_verified": row.get::<bool, _>("email_verified"),
+                        "privacy": row.get::<bool, _>("privacy"),
+                        "is_banned": row.get::<bool, _>("is_banned"),
+                        "banned_until": row.get::<Option<NaiveDateTime>, _>("banned_until")
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            HttpResponse::Ok().json(json!({
+                "users": users,
+                "total": total_count,
+                "limit": limit,
+                "offset": offset
+            }))
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            error!("Database error: {:?}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "message": "Failed to fetch users"
+            }))
+        }
+    }
+}
+
 //Get Admin Stats
 //Get Admin Stats Input: HttpRequest(JWT Token)
 //Get Admin Stats Output: GetAdminStatsResponse
@@ -1470,6 +1644,7 @@ pub async fn get_admin_stats(pool: web::Data<PgPool>, req: HttpRequest) -> impl 
 // POST /admin/users/ban
 // POST /admin/users/unban
 // GET /admin/users/banned
+// GET /admin/users
 // GET /admin/stats
 pub fn config_admin_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
@@ -1502,6 +1677,7 @@ pub fn config_admin_routes(cfg: &mut web::ServiceConfig) {
             .route("/users/ban", web::post().to(ban_user))
             .route("/users/unban", web::post().to(unban_user))
             .route("/users/banned", web::get().to(get_banned_users))
+            .route("/users", web::get().to(get_all_users))
             // Admin dashboard routes
             .route("/stats", web::get().to(get_admin_stats)),
     );

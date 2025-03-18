@@ -35,7 +35,8 @@ use routes::{
 };
 use shuttle_actix_web::ShuttleActixWeb;
 use shuttle_runtime::SecretStore;
-use sqlx::PgPool;
+use sqlx::{postgres::PgPoolOptions, PgPool};
+use std::time::Duration;
 
 #[shuttle_runtime::main]
 async fn main(
@@ -71,8 +72,15 @@ async fn main(
         }
     };
 
-    // Connect to the database
-    let pool = match PgPool::connect(&database_url).await {
+    // Connect to the database with improved connection pool settings
+    let pool = match PgPoolOptions::new()
+        .max_connections(20)
+        .acquire_timeout(Duration::from_secs(5))
+        .idle_timeout(Duration::from_secs(300))
+        .max_lifetime(Duration::from_secs(1800))
+        .connect(&database_url)
+        .await
+    {
         Ok(pool) => pool,
         Err(e) => {
             // This one should still fail as we can't proceed without a database
@@ -132,8 +140,8 @@ async fn main(
                 .wrap(IdentityMiddleware::default())
                 .wrap(
                     SessionMiddleware::builder(CookieSessionStore::default(), secret_key.clone())
-                        .cookie_secure(false) // Must be false for localhost testing
-                        .cookie_http_only(true)
+                            .cookie_secure(true)
+                            .cookie_http_only(true)
                         .cookie_same_site(SameSite::None)
                         .cookie_name("bth_session".to_string())
                         .cookie_path("/".to_string())

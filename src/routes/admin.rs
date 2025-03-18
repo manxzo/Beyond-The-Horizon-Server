@@ -903,12 +903,7 @@ pub async fn ban_user(
         return response;
     }
 
-    // Get admin ID from claims
-    let admin_id = if let Some(claims) = req.extensions().get::<Claims>() {
-        claims.id
-    } else {
-        return HttpResponse::Unauthorized().body("Authentication required");
-    };
+   
 
     // Validate input
     if payload.reason.trim().is_empty() {
@@ -997,33 +992,6 @@ pub async fn ban_user(
         return HttpResponse::InternalServerError().body("Failed to ban user");
     }
 
-    // Log the ban action
-    let log_query = r#"
-        INSERT INTO admin_actions (action_id, admin_id, user_id, action_type, reason, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
-    "#;
-
-    let ban_type = if payload.ban_duration_days.is_some() && payload.ban_duration_days.unwrap() > 0
-    {
-        "temporary_ban"
-    } else {
-        "permanent_ban"
-    };
-
-    if let Err(e) = sqlx::query(log_query)
-        .bind(Uuid::new_v4())
-        .bind(admin_id)
-        .bind(payload.user_id)
-        .bind(ban_type)
-        .bind(&payload.reason)
-        .bind(Utc::now().naive_utc())
-        .execute(&mut *tx)
-        .await
-    {
-        eprintln!("Failed to log ban action: {:?}", e);
-        // Continue even if logging fails
-    }
-
     // Commit the transaction
     if let Err(e) = tx.commit().await {
         eprintln!("Failed to commit transaction: {:?}", e);
@@ -1056,13 +1024,6 @@ pub async fn unban_user(
     if let Err(response) = ensure_admin(&req) {
         return response;
     }
-
-    // Get admin ID from claims
-    let admin_id = if let Some(claims) = req.extensions().get::<Claims>() {
-        claims.id
-    } else {
-        return HttpResponse::Unauthorized().body("Authentication required");
-    };
 
     // Start a transaction
     let mut tx = match pool.begin().await {
@@ -1124,26 +1085,6 @@ pub async fn unban_user(
         eprintln!("Failed to unban user: {:?}", e);
         let _ = tx.rollback().await;
         return HttpResponse::InternalServerError().body("Failed to unban user");
-    }
-
-    // Log the unban action
-    let log_query = r#"
-        INSERT INTO admin_actions (action_id, admin_id, user_id, action_type, reason, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
-    "#;
-
-    if let Err(e) = sqlx::query(log_query)
-        .bind(Uuid::new_v4())
-        .bind(admin_id)
-        .bind(payload.user_id)
-        .bind("unban")
-        .bind("User unbanned by admin")
-        .bind(Utc::now().naive_utc())
-        .execute(&mut *tx)
-        .await
-    {
-        eprintln!("Failed to log unban action: {:?}", e);
-        // Continue even if logging fails
     }
 
     // Commit the transaction

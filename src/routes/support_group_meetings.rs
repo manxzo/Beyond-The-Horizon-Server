@@ -7,7 +7,7 @@ use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 //Create Support Group Meeting Request
@@ -698,6 +698,92 @@ pub async fn get_meeting(
     }
 }
 
+//Get User Meetings
+//Get User Meetings Input: HttpRequest(JWT Token)
+//Get User Meetings Output: Vec<GroupMeeting> with additional fields
+pub async fn get_user_meetings(pool: web::Data<PgPool>, req: HttpRequest) -> impl Responder {
+    if let Some(claims) = req.extensions().get::<Claims>() {
+        let user_id = claims.id;
+
+        // Fetch all meetings the user is a participant in
+        let query = "
+            SELECT gm.*, sg.title as group_title, 
+                   COUNT(mp.user_id) as participant_count,
+                   true as is_participant,
+                   (gm.host_id = $1) as is_host
+            FROM group_meetings gm
+            JOIN meeting_participants mp ON gm.meeting_id = mp.meeting_id
+            JOIN support_groups sg ON gm.support_group_id = sg.support_group_id
+            WHERE mp.user_id = $1
+            GROUP BY gm.meeting_id, sg.title
+            ORDER BY 
+                CASE 
+                    WHEN gm.status = 'ongoing' THEN 0
+                    WHEN gm.status = 'upcoming' THEN 1
+                    ELSE 2
+                END,
+                gm.scheduled_time ASC
+        ";
+
+        match sqlx::query(query)
+            .bind(user_id)
+            .fetch_all(pool.get_ref())
+            .await
+        {
+            Ok(rows) => {
+                let meetings: Vec<serde_json::Value> = rows
+                    .iter()
+                    .map(|row| {
+                        let meeting_id: Uuid = row.try_get("meeting_id").unwrap_or_default();
+                        let group_chat_id: Option<Uuid> =
+                            row.try_get("group_chat_id").unwrap_or(None);
+                        let meeting_chat_id: Option<Uuid> =
+                            row.try_get("meeting_chat_id").unwrap_or(None);
+                        let support_group_id: Uuid =
+                            row.try_get("support_group_id").unwrap_or_default();
+                        let host_id: Uuid = row.try_get("host_id").unwrap_or_default();
+                        let title: String = row.try_get("title").unwrap_or_default();
+                        let description: Option<String> =
+                            row.try_get("description").unwrap_or(None);
+                        let scheduled_time: NaiveDateTime =
+                            row.try_get("scheduled_time").unwrap_or_default();
+                        let status: MeetingStatus =
+                            row.try_get("status").unwrap_or(MeetingStatus::Upcoming);
+                        let group_title: String = row.try_get("group_title").unwrap_or_default();
+                        let participant_count: i64 = row.try_get("participant_count").unwrap_or(0);
+                        let is_participant: bool = row.try_get("is_participant").unwrap_or(false);
+                        let is_host: bool = row.try_get("is_host").unwrap_or(false);
+
+                        json!({
+                            "meeting_id": meeting_id,
+                            "group_chat_id": group_chat_id,
+                            "meeting_chat_id": meeting_chat_id,
+                            "support_group_id": support_group_id,
+                            "host_id": host_id,
+                            "title": title,
+                            "description": description,
+                            "scheduled_time": scheduled_time,
+                            "status": status,
+                            "group_title": group_title,
+                            "participant_count": participant_count,
+                            "is_participant": is_participant,
+                            "is_host": is_host
+                        })
+                    })
+                    .collect();
+
+                HttpResponse::Ok().json(json!({ "data": meetings }))
+            }
+            Err(e) => {
+                eprintln!("Error fetching user meetings: {:?}", e);
+                HttpResponse::InternalServerError().body("Failed to fetch meetings")
+            }
+        }
+    } else {
+        HttpResponse::Unauthorized().body("Authentication required")
+    }
+}
+
 //Config Meeting Routes
 // POST /meetings/create
 // POST /meetings/join
@@ -706,12 +792,14 @@ pub async fn get_meeting(
 // POST /meetings/{meeting_id}/start
 // POST /meetings/{meeting_id}/end
 // GET /meetings/{meeting_id}
+// GET /meetings/user
 pub fn config_meeting_routes(cfg: &mut web::ServiceConfig) {
     // For operations on individual meetings.
     cfg.service(
         web::scope("/meetings")
             .route("/new", web::post().to(create_support_group_meeting))
             .route("/join", web::post().to(join_meeting))
+            .route("/user", web::get().to(get_user_meetings))
             .route("/{meeting_id}/leave", web::delete().to(leave_meeting))
             .route(
                 "/{meeting_id}/participants",

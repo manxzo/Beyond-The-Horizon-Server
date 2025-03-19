@@ -1,6 +1,13 @@
 # Beyond The Horizon - Server
 
+![logo](/icon.png)
 Beyond The Horizon is my first Rust project, built as I transitioned from JavaScript to Rust development. It's a robust server application powering a support group and community platform. While the learning curve was steep, the journey taught me invaluable lessons about systems programming, memory management, and building high-performance web services.
+
+### Live Page URL [Beyond The Horizon](beyondthehorizon.my)
+
+### Link to Client Repository [Beyond-The-Horizon-Client](https://github.com/manxzo/Beyond-The-Horizon-Client)
+
+### Live Server Shuttle URL [Beyond The Horizon Server](https://bth-server-ywjx.shuttle.app/)
 
 ---
 
@@ -49,56 +56,138 @@ The server is organized into distinct route modules, each handling specific func
 ### User Management Routes
 
 ```rust
-// user_auth.rs (311 lines)
-pub async fn register(data: web::Json<RegisterData>) -> Result<HttpResponse, Error> {
-    // User registration logic
+// user_auth.rs
+pub async fn create_user(
+    pool: web::Data<PgPool>,
+    payload: web::Json<CreateUserRequest>
+) -> impl Responder {
+    // Example request:
+    {
+        "username": "john_doe",
+        "email": "john@example.com",
+        "password": "secure_password",
+        "dob": "1990-01-01"
+    }
+    // Returns: CreatedUserResponse
 }
 
-// user_data.rs (604 lines)
-pub async fn update_profile(user: AuthenticatedUser, data: web::Json<ProfileData>) -> Result<HttpResponse, Error> {
-    // Profile update logic
+// user_data.rs
+pub async fn update_user_profile(
+    pool: web::Data<PgPool>,
+    req: HttpRequest,
+    payload: web::Json<UpdateUserRequest>
+) -> impl Responder {
+    // Example request:
+    {
+        "user_profile": "About me...",
+        "bio": "My bio...",
+        "location": {"city": "New York"},
+        "interests": ["anxiety", "depression"],
+        "experience": ["5 years recovery"],
+        "available_days": ["Monday", "Wednesday"],
+        "languages": ["English", "Spanish"],
+        "privacy": true
+    }
+    // Returns: UpdatedUserProfile
 }
 ```
 
 ### Support Group Routes
 
 ```rust
-// support_groups.rs (443 lines)
-pub async fn create_group(user: AuthenticatedUser, data: web::Json<GroupData>) -> Result<HttpResponse, Error> {
-    // Group creation logic
+// support_groups.rs
+pub async fn suggest_support_group(
+    pool: web::Data<PgPool>,
+    req: HttpRequest,
+    payload: web::Json<SuggestSupportGroupRequest>
+) -> impl Responder {
+    // Example request:
+    {
+        "title": "Anxiety Support Group",
+        "description": "A safe space for anxiety discussion"
+    }
+    // Returns: SupportGroup
 }
 
-// support_group_meetings.rs (813 lines)
-pub async fn schedule_meeting(user: AuthenticatedUser, data: web::Json<MeetingData>) -> Result<HttpResponse, Error> {
-    // Meeting scheduling logic
+// support_group_meetings.rs
+pub async fn create_support_group_meeting(
+    pool: web::Data<PgPool>,
+    req: HttpRequest,
+    payload: web::Json<CreateSupportGroupMeetingRequest>
+) -> impl Responder {
+    // Example request:
+    {
+        "support_group_id": "uuid",
+        "title": "Weekly Meeting",
+        "description": "Our weekly support session",
+        "scheduled_time": "2024-01-20T15:00:00"
+    }
+    // Returns: GroupMeeting
 }
 ```
 
 ### Communication Routes
 
 ```rust
-// private_messaging.rs (363 lines)
-pub async fn send_message(user: AuthenticatedUser, data: web::Json<MessageData>) -> Result<HttpResponse, Error> {
-    // Private messaging logic
+// private_messaging.rs
+pub async fn send_message(
+    pool: web::Data<PgPool>,
+    req: HttpRequest,
+    payload: web::Json<SendMessageRequest>
+) -> impl Responder {
+    // Example request:
+    {
+        "receiver_username": "jane_doe",
+        "content": "Hello, how are you?"
+    }
+    // Returns: Message
 }
 
-// group_chats.rs (498 lines)
-pub async fn group_message(user: AuthenticatedUser, data: web::Json<GroupMessageData>) -> Result<HttpResponse, Error> {
-    // Group chat logic
+// group_chats.rs
+pub async fn send_group_chat_message(
+    pool: web::Data<PgPool>,
+    req: HttpRequest,
+    path: web::Path<Uuid>,
+    payload: web::Json<SendGroupChatMessageRequest>
+) -> impl Responder {
+    // Example request:
+    {
+        "content": "Hello everyone!"
+    }
+    // Returns: GroupChatMessage
 }
 ```
 
 ### Content Management Routes
 
 ```rust
-// posts.rs (657 lines)
-pub async fn create_post(user: AuthenticatedUser, data: web::Json<PostData>) -> Result<HttpResponse, Error> {
-    // Post creation logic
+// posts.rs
+pub async fn create_post(
+    pool: web::Data<PgPool>,
+    req: HttpRequest,
+    payload: web::Json<CreatePostRequest>
+) -> impl Responder {
+    // Example request:
+    {
+        "content": "Sharing my recovery journey...",
+        "tags": ["recovery", "motivation"]
+    }
+    // Returns: Post
 }
 
-// resources.rs (253 lines)
-pub async fn share_resource(user: AuthenticatedUser, data: web::Json<ResourceData>) -> Result<HttpResponse, Error> {
-    // Resource sharing logic
+// resources.rs
+pub async fn create_resource(
+    pool: web::Data<PgPool>,
+    req: HttpRequest,
+    payload: web::Json<CreateResourceRequest>
+) -> impl Responder {
+    // Example request:
+    {
+        "title": "Coping Strategies",
+        "content": "Useful techniques for anxiety...",
+        "support_group_id": "optional-uuid"
+    }
+    // Returns: Resource
 }
 ```
 
@@ -119,14 +208,35 @@ pub async fn match_with_sponsor(user: AuthenticatedUser, data: web::Json<Matchin
 ### Administration Routes
 
 ```rust
-// admin.rs (1631 lines)
-pub async fn moderate_content(admin: AdminUser, data: web::Json<ModerationData>) -> Result<HttpResponse, Error> {
-    // Content moderation logic
+// admin.rs
+pub async fn review_sponsor_application(
+    pool: web::Data<PgPool>,
+    req: HttpRequest,
+    payload: web::Json<ReviewSponsorApplicationRequest>
+) -> impl Responder {
+    // Example request:
+    {
+        "application_id": "uuid",
+        "status": "approved",
+        "admin_comments": "Application approved..."
+    }
+    // Returns: AdminActionResponse
 }
 
-// report.rs (158 lines)
-pub async fn handle_report(admin: AdminUser, data: web::Json<ReportData>) -> Result<HttpResponse, Error> {
-    // Report handling logic
+// report.rs
+pub async fn create_report(
+    pool: web::Data<PgPool>,
+    req: HttpRequest,
+    payload: web::Json<CreateReportRequest>
+) -> impl Responder {
+    // Example request:
+    {
+        "reported_user_id": "uuid",
+        "reason": "Inappropriate behavior",
+        "reported_type": "Message",
+        "reported_item_id": "uuid"
+    }
+    // Returns: Report
 }
 ```
 

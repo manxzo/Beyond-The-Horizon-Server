@@ -826,4 +826,4 @@ This project was developed with AI assistance for:
 - Query optimization
 - Architecture design
 
-All code was written and understood by the developer, with AI serving as a learning aid.
+Most code was written and understood by me, with AI serving as a learning aid.
